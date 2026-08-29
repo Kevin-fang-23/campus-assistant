@@ -1,0 +1,26 @@
+# Render 一键蓝图：把后端部署为公开 Web 服务。
+# 用法：Render 控制台 -> New -> Blueprint -> 关联本仓库 -> 使用此文件。
+# 也可不依赖此文件，在 Render 手动建 Web Service 指向 backend/（用 Dockerfile 或 Python 运行时均可）。
+services:
+  - type: web
+    name: campus-assistant-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      # Render 会自动注入 PORT，无需手动填
+      - key: PORT
+        sync: false
+      # 允许前端域名跨域访问；上线后把值改成你的 Vercel 域名（逗号或 JSON 均可）
+      - key: CORS_ORIGINS
+        value: "https://campus-assistant.vercel.app"
+        sync: false
+      # 演示用 SQLite 即可；若需数据持久化，在 Render 加 PostgreSQL 插件并把下面这行填上
+      # - key: DATABASE_URL
+      #   value: postgresql+psycopg://user:password@host:5432/campus
+      # 可选：接入真实视觉大模型（不填则走内置 mock，全链路仍可跑通）
+      # - key: VLM_PROVIDER
+      #   value: dashscope
+      # - key: DASHSCOPE_API_KEY
+      #   sync: false

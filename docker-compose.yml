@@ -1,0 +1,45 @@
+# 可选：一键起 PostgreSQL(pgvector) + 后端。
+# 前端仍建议本地 `npm install && npm run dev`（见 README）。
+#
+# 用法：
+#   docker compose up --build
+#   后端 API: http://localhost:8000  (docs: /docs)
+#
+# 说明：默认后端用 SQLite；本 compose 通过环境变量切到 PostgreSQL，
+#       并启用 pgvector 兼容的向量表（当前应用把向量存为 bytea，无需额外迁移）。
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: campus
+      POSTGRES_PASSWORD: campus
+      POSTGRES_DB: campus
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U campus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://campus:campus@db:5432/campus
+      VLM_PROVIDER: ${VLM_PROVIDER:-mock}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-auto}
+      CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/storage:/app/storage
+
+volumes:
+  pgdata:

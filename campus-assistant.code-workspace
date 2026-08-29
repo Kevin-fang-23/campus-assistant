@@ -1,0 +1,8 @@
+{
+  "folders": [{ "path": "." }],
+  "settings": {
+    "python.defaultInterpreterPath": "C:/Users/86182/.workbuddy/binaries/python/envs/campus/Scripts/python.exe",
+    "python.analysis.extraPaths": ["backend"],
+    "files.exclude": { "**/__pycache__": true }
+  }
+}

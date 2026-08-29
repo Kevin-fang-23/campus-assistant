@@ -1,0 +1,11 @@
+{
+    "python.defaultInterpreterPath": "C:/Users/86182/.workbuddy/binaries/python/envs/campus/Scripts/python.exe",
+    "python.analysis.extraPaths": ["backend"],
+    "python-envs.pythonProjects": [
+        {
+            "path": ".",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        }
+    ]
+}

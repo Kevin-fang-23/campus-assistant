@@ -1,0 +1,25 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.db
+backend/campus.db
+backend/storage/
+.env
+.env.*
+!.env.example
+
+# ---- Node / 前端 ----
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-error.log*
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+
+# ---- 本地运行状态 ----
+.campus_ports
