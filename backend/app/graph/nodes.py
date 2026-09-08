@@ -60,11 +60,14 @@ def extract_node(state: PipelineState) -> dict[str, Any]:
     t0 = time.perf_counter()
     text = state.get("raw_text", "") or ""
     category = state.get("category", Category.OTHER)
+    # base_time 必须透传到抽取层，否则「明天/本周五」会按 datetime.now() 解析，
+    # 同一份样本在不同日期跑出不同结果（评测不可复现）。
+    base = state.get("base_time")
     try:
-        data = get_vlm().extract(text, category, state.get("images") or [])
+        data = get_vlm().extract(text, category, state.get("images") or [], base=base)
     except Exception as exc:  # noqa: BLE001
         logger.exception("抽取节点异常，降级为规则抽取")
-        data = rule_extract.extract(text, category)
+        data = rule_extract.extract(text, category, base=base)
         data["extra"]["error"] = str(exc)
     filled = [k for k in ("title", "location", "issuer", "course", "event_time", "deadline")
               if data.get(k)]

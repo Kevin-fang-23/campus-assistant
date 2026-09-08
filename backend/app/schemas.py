@@ -202,6 +202,31 @@ class SearchOut(BaseModel):
     hits: list[SearchHit]
 
 
+class QAIn(BaseModel):
+    query: str = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class CitationOut(BaseModel):
+    """回答所依据的通知片段，供前端引用溯源高亮。"""
+
+    notice_id: int
+    title: str
+    snippet: str
+    score: float
+
+
+class AnswerOut(BaseModel):
+    """RAG 问答结果。degraded=True 表示未走 LLM（无 Key / LLM 失败 / 无召回），
+    answer 为抽取式回答；degraded=False 表示 answer 由 LLM 基于 citations 生成。"""
+
+    query: str
+    answer: str
+    citations: list[CitationOut]
+    backend: str
+    degraded: bool
+
+
 class StatsOut(BaseModel):
     documents: int
     notices: int

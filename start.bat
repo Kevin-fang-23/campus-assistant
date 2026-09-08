@@ -7,7 +7,9 @@ title 校园助手 - 主控制台
 REM ===== 解释器路径：优先用本机装好的 venv / node，缺失则回退系统命令 =====
 set "VENV_PY=C:/Users/86182/.workbuddy/binaries/python/envs/campus/Scripts/python.exe"
 if not exist "%VENV_PY%" set "VENV_PY=python"
-set "NPM=C:/Users/86182/.workbuddy/binaries/node/versions/22.22.2/npm.cmd"
+set "NPM=C:/Users/86182/.workbuddy/binaries/node/versions/22.22.2-2/npm.cmd"
+if not exist "%NPM%" set "NPM=C:/Users/86182/.workbuddy/binaries/node/versions/22.22.2/npm.cmd"
+if not exist "%NPM%" set "NPM=C:/Program Files/nodejs/npm.cmd"
 if not exist "%NPM%" set "NPM=npm"
 
 set "BACKEND=backend"
@@ -61,6 +63,30 @@ echo %PORT_B% %PORT_F% > ".campus_ports"
 REM ===== 4) 启动后端 API（固定绑 127.0.0.1，便于探活；去掉 --reload 减少子进程，更稳定）=====
 echo [1/2] 启动后端 API (http://127.0.0.1:%PORT_B%) ...
 start "campus-backend" cmd /k "cd /d %BACKEND% && %VENV_PY% -m uvicorn app.main:app --host 127.0.0.1 --port %PORT_B%"
+
+REM ===== 4.5) 自检：esbuild 原生二进制缺失会导致 vite 起不来（可能被杀毒/清理误删），缺失则自动修复 =====
+REM 注意：直接跑 npm install 修复不了——@esbuild/win32-x64 的 package.json 仍在，
+REM npm 判定"已是最新"会跳过，必须先删掉整个包目录再重装。
+if not exist "%FRONTEND%\node_modules\@esbuild\win32-x64\esbuild.exe" (
+  echo [自检] 检测到前端 esbuild 二进制缺失，正在自动修复（约 1 分钟）...
+  if exist "%FRONTEND%\node_modules\@esbuild\win32-x64" (
+    rmdir /s /q "%FRONTEND%\node_modules\@esbuild\win32-x64"
+  )
+  pushd "%FRONTEND%"
+  call "%NPM%" install --no-save --no-audit --no-fund
+  popd
+  if not exist "%FRONTEND%\node_modules\@esbuild\win32-x64\esbuild.exe" (
+    echo.
+    echo [错误] esbuild 自动修复失败。请手动执行：
+    echo        cd frontend
+    echo        rmdir /s /q node_modules\@esbuild\win32-x64
+    echo        npm install
+    echo.
+    pause
+    goto :eof
+  )
+  echo [自检] esbuild 已修复，继续启动。
+)
 
 REM ===== 5) 启动前端（把后端端口传入 vite 代理，保证联动）=====
 echo [2/2] 启动前端 (http://127.0.0.1:%PORT_F%) ...

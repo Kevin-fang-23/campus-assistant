@@ -16,6 +16,9 @@ export default defineConfig({
     // 监听所有网卡的 IPv4，确保浏览器用 127.0.0.1 / localhost 都能打开
     host: "0.0.0.0",
     port: 5173,
+    // 允许任意 Host 访问（否则 ngrok 等公网隧道的域名会被 Vite 的
+    // DNS-rebinding 防护拦截，返回 403 Blocked request）
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: BACKEND_TARGET,

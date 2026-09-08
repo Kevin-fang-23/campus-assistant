@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -94,6 +95,72 @@ def test_semantic_search(client: TestClient) -> None:
     body = resp.json()
     assert body["hits"], "向量库应能召回已入库通知"
     assert body["hits"][0]["score"] > 0
+
+
+def test_qa_degraded_path(client: TestClient) -> None:
+    """QA_PROVIDER=mock 时走降级路径：抽取式回答 + 引用，响应结构不变。"""
+    resp = client.post("/api/qa", json={"query": "操作系统作业什么时候截止", "top_k": 3})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["query"] == "操作系统作业什么时候截止"
+    assert body["answer"], "降级路径也应给出 top1 抽取式回答"
+    assert body["citations"], "降级路径引用列表不能为空"
+    for c in body["citations"]:
+        assert c["notice_id"] and c["title"] and c["snippet"]
+        assert c["score"] > 0
+    assert body["backend"]
+
+
+def test_qa_llm_path_with_mock_transport(client: TestClient, monkeypatch) -> None:
+    """LLM 路径：注入 MockTransport 的 OpenAICompatClient，验证真实调用链。
+
+    必须复用 build_client_from_settings 同款客户端（含鉴权头构造与响应解析），
+    只把网络层换成 MockTransport——保证「客户端封装零新增」可被测试证明。
+    """
+    import httpx
+
+    from app.api import qa as qa_module
+    from app.providers.llm_client import OpenAICompatClient
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("Authorization")
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "根据[1]，截止时间是9月18日22:00。"}}]
+        })
+
+    def fake_client() -> OpenAICompatClient:
+        return OpenAICompatClient(
+            base_url="https://mock.test/v1",
+            api_key="test-key",
+            transport=httpx.MockTransport(handler),
+            sleep_fn=lambda s: None,
+        )
+
+    monkeypatch.setattr(qa_module, "_build_llm_client", fake_client)
+    monkeypatch.setattr(qa_module.settings, "qa_provider", "auto")
+    monkeypatch.setattr(qa_module.settings, "dashscope_api_key", "test-key")
+
+    resp = client.post("/api/qa", json={"query": "作业截止时间", "top_k": 3})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is False
+    assert "9月18日" in body["answer"]
+    assert body["citations"]
+    # 走的是 OpenAICompatClient 的标准调用链：Bearer 鉴权头 + chat/completions
+    assert captured["auth"] == "Bearer test-key"
+    assert captured["body"]["model"] == qa_module.settings.qa_model
+    assert captured["body"]["messages"][0]["role"] == "system"
+
+
+def test_qa_validation_errors(client: TestClient) -> None:
+    """入参校验与 /api/search 同构：空 query 422，top_k 越界 422。"""
+    assert client.post("/api/qa", json={"query": ""}).status_code == 422
+    assert client.post("/api/qa", json={"query": "x", "top_k": 0}).status_code == 422
+    assert client.post("/api/qa", json={"query": "x", "top_k": 99}).status_code == 422
 
 
 def test_validation_errors(client: TestClient) -> None:

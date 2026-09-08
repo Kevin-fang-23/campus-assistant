@@ -10,6 +10,7 @@ from functools import lru_cache
 import numpy as np
 
 from ..config import settings
+from .llm_client import build_client_from_settings
 
 logger = logging.getLogger(__name__)
 
@@ -67,25 +68,17 @@ class DashScopeEmbedding(BaseEmbedding):
     name = "dashscope"
 
     def __init__(self) -> None:
-        import httpx
-
         self.dim = 1024
-        self._client = httpx.Client(
-            base_url=settings.vlm_base_url.rstrip("/"),
-            timeout=settings.vlm_timeout,
-            headers={"Authorization": f"Bearer {settings.dashscope_api_key}"},
-        )
+        # 与 VLM 共用同一套鉴权 / 超时 / 重试策略
+        self._client = build_client_from_settings()
         self._fallback = LocalHashEmbedding()
 
     def embed(self, texts: list[str]) -> np.ndarray:
         try:
-            resp = self._client.post(
-                "/embeddings",
-                json={"model": settings.embedding_model, "input": [t[:2000] for t in texts]},
+            vecs = np.array(
+                self._client.embed([t[:2000] for t in texts], model=settings.embedding_model),
+                dtype=np.float32,
             )
-            resp.raise_for_status()
-            data = resp.json()["data"]
-            vecs = np.array([item["embedding"] for item in data], dtype=np.float32)
             norms = np.linalg.norm(vecs, axis=1, keepdims=True)
             self.dim = vecs.shape[1]
             return vecs / np.maximum(norms, 1e-9)

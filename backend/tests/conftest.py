@@ -10,6 +10,9 @@ os.environ["DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["STORAGE_DIR"] = str(_TMP / "storage")
 os.environ["VLM_PROVIDER"] = "mock"
 os.environ["OCR_PROVIDER"] = "stub"
+# QA 强制走降级路径（抽取式回答），测试不发起真实 LLM 调用；
+# LLM 路径由专门用例注入 MockTransport 验证。
+os.environ["QA_PROVIDER"] = "mock"
 
 import pytest  # noqa: E402
 

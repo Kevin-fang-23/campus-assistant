@@ -74,3 +74,58 @@ def test_low_confidence_needs_review() -> None:
 
 def test_engine_is_langgraph_when_installed() -> None:
     assert engine_name() in ("langgraph", "sequential")
+
+
+def test_base_time_is_propagated_to_extraction() -> None:
+    """相对时间必须按传入的 base_time 解析，而不是 datetime.now()。
+
+    这条用例与「今天几号」无关：基准日固定为 2026-08-24（周一），
+    两个相隔一周的基准日必须解析出相差一周的结果。
+    """
+    text = "《计算机网络》课程调整至本周五下午2:30，地点改为A305"
+    monday = datetime(2026, 8, 24, 10, 0)     # 本周五 = 08-28
+    next_monday = datetime(2026, 8, 31, 10, 0)  # 本周五 = 09-04
+
+    st_a = run_pipeline(document_id=0, raw_text=text, kind="text", base_time=monday)
+    st_b = run_pipeline(document_id=0, raw_text=text, kind="text", base_time=next_monday)
+
+    assert st_a["notice"]["event_time"] == datetime(2026, 8, 28, 14, 30)
+    assert st_b["notice"]["event_time"] == datetime(2026, 9, 4, 14, 30)
+    assert st_a["notice"]["event_time"] != st_b["notice"]["event_time"]
+
+
+def test_location_stops_at_next_field_label() -> None:
+    """单行空格分隔的海报里，地点值必须在下一个字段标签处截断。
+
+    回归 act_03：原贪婪匹配把「主办:创客社团」整个吞进地点，
+    又因 issuer 与地点重叠被连坐清空。
+    """
+    state = _run("创客社团招新宣讲会 时间：下周三晚上7点半 地点：工学院B101 主办：创客社团")
+    notice = state["notice"]
+    assert notice["location"] == "工学院B101"
+    assert notice["issuer"] == "创客社团"
+
+
+def test_labeled_issuer_overlapping_location_is_kept() -> None:
+    """显式「主办：X」与地点重叠时不判误抽。
+
+    回归 act_08：「地点:计算机学院A301，主办:计算机学院」——学院既是
+    场地又是主办方，语义都成立。只有猜测型 issuer 才按重叠清空。
+    """
+    state = _run("学术讲座通知：主题《大模型时代的软件工程》，时间：9月9日15:00，"
+                 "地点：计算机学院A301，主办：计算机学院。")
+    notice = state["notice"]
+    assert notice["location"] == "计算机学院A301"
+    assert notice["issuer"] == "计算机学院"
+
+
+def test_guessed_issuer_overlapping_location_still_cleared() -> None:
+    """无显式标签、猜测型 issuer 与地点重叠时仍应清空（防 act_07/rp_03 回归）。
+
+    本条断言的口径与评测一致（双向包含）：地点允许是期望值的子串，
+    但 issuer（「在图书馆」这类误抽）必须为 None。
+    """
+    state = _run("志愿服务活动招募：本周六上午8:00在图书馆南门集合，报名从速。")
+    notice = state["notice"]
+    assert "图书馆" in (notice["location"] or "")
+    assert notice["issuer"] is None

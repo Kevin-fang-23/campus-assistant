@@ -5,7 +5,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -48,9 +48,19 @@ class Settings(BaseSettings):
     vlm_provider: str = "mock"
     vlm_model: str = "qwen3-vl-plus"          # 可改 qwen3.5-vl-plus / qwen3-vl-flash / 自托管模型名
     vlm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # 阿里云百炼密钥：优先 ALIYUN_API_KEY，DASHSCOPE_API_KEY 为历史别名（见下方校验器）
+    aliyun_api_key: str = ""
     dashscope_api_key: str = ""
     vlm_timeout: float = 60.0
     vlm_max_retries: int = 2
+    # 重试退避：第 n 次等待 = min(backoff_max, backoff_base * 2**n) * 抖动
+    vlm_backoff_base: float = 0.8
+    vlm_backoff_max: float = 8.0
+
+    # ---- 检索增强问答（/api/qa）----
+    # auto: 有 Key 走 LLM 生成，无 Key 降级为抽取式回答；mock: 强制降级（测试用）
+    qa_provider: str = "auto"
+    qa_model: str = "qwen-plus"              # 纯文本问答模型，无需视觉能力，比 VL 模型便宜
 
     # ---- OCR ----
     # auto: paddleocr -> rapidocr -> vlm -> stub 依次探测
@@ -71,6 +81,15 @@ class Settings(BaseSettings):
     review_confidence_threshold: float = 0.55  # 低于此置信度进人工复核
 
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    @model_validator(mode="after")
+    def _merge_api_key(self) -> Settings:
+        # 两个变量名任一有值即生效，避免改名后旧配置静默失效
+        if not self.dashscope_api_key:
+            object.__setattr__(self, "dashscope_api_key", self.aliyun_api_key)
+        if not self.aliyun_api_key:
+            object.__setattr__(self, "aliyun_api_key", self.dashscope_api_key)
+        return self
 
     @field_validator("cors_origins", mode="before")
     @classmethod

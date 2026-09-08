@@ -11,6 +11,14 @@ backend/storage/
 .env.*
 !.env.example
 
+# ---- 密钥与证书（绝不入库） ----
+*.key
+*.pem
+*.p12
+secrets.*
+*credentials*.json
+.aliyun/
+
 # ---- Node / 前端 ----
 node_modules/
 frontend/dist/
@@ -23,3 +31,16 @@ Thumbs.db
 
 # ---- 本地运行状态 ----
 .campus_ports
+
+# ---- 工具产物 / 不该进仓库的辅助文件 ----
+.workbuddy/
+.trae-html-share-packages/
+campus-assistant-review/
+
+# ---- 个人文档（简历等）绝不入库 ----
+*.docx
+*.doc
+*.pdf
+resume*
+简历*
+!README*

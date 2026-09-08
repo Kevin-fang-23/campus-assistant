@@ -21,7 +21,8 @@ DEADLINE_KWS = ("截止", "截至", "最晚", "不迟于", "deadline", "ddl", "�
 RESCHEDULE_KWS = ("调整至", "调整到", "调整为", "调至", "调到", "改为", "改到", "改至",
                   "变更为", "变更至", "顺延至", "延期至", "推迟到", "推迟至", "提前到", "提前至")
 # 失效语境：原定时间，不应作为最终时间
-STALE_KWS = ("原定", "原为", "原计划", "原安排", "原课表", "取消")
+# 「原」单独收录：覆盖「由原9月1日推迟到9月8日」这类省略「定」的写法
+STALE_KWS = ("原定", "原为", "原计划", "原安排", "原课表", "取消", "原")
 EVENT_KWS = ("时间", "举办", "开始", "开讲", "举行", "上课", "考试", "集合", "报到",
              "签到", "地点", "活动", "讲座", "于")
 
@@ -74,7 +75,7 @@ RE_DATE_YMD = re.compile(
     r"(?:(\d{4})\s*[年\-/])?\s*(\d{1,2})\s*[月\-/]\s*(\d{1,2})\s*[日号]?"
 )
 RE_DATE_CN = re.compile(rf"({_NUM})\s*月\s*({_NUM})\s*[日号]")
-RE_RELDAY = re.compile(r"(今天|今日|明天|明日|后天|大后天|当天)")
+RE_RELDAY = re.compile(r"(今天|今日|今晚|明晚|明天|明日|后天|大后天|当天)")
 RE_WEEKDAY = re.compile(
     r"(本周|这周|这个?星期|本星期|下周|下个?星期|周|星期)\s*([一二三四五六日天1-7])"
 )
@@ -85,20 +86,23 @@ RE_TIME_CN = re.compile(
 )
 # 「3天后交 / 两周后提交」这类结构等价于截止时间
 RE_DEADLINE_TAIL = re.compile(r"后\s*(?:交|提交|上交|完成|截止|结束)(?!流)")
+# 「9月30日前提交」「本周五前修好」：日期/星期后紧跟「前」= 截止边界而非事件时间。
+# 注意 _classify 的 right 从命中起点开始，本身含日期文本，故用 search 而非 match。
+RE_DEADLINE_FRONT = re.compile(r"[日号天一二三四五六]\s*前")
 # 纯时间（无日期）只有在时间语境里才采信，避免把「共有4点要求」误判为时间
 RE_TIME_CONTEXT = re.compile(
-    r"(?:时间|上午|下午|晚上|中午|早上|凌晨|傍晚|开始|集合|报到|签到|截止|之前|至|到|于|前)\s*$"
+    r"(?:时间|上午|下午|晚上|中午|早上|凌晨|傍晚|晚|开始|集合|报到|签到|截止|之前|至|到|于|前)\s*$"
 )
 
 
 def _classify(text: str, pos: int) -> str:
     """按命中位置前后的关键词判定时间语义：reschedule > deadline > stale > event。"""
-    left = text[max(0, pos - 14):pos].lower()
+    left = text[max(0, pos - 8):pos].lower()
     right = text[pos:pos + 14].lower()
     if any(kw in left for kw in RESCHEDULE_KWS):
         return "reschedule"
     if (any(kw in left for kw in DEADLINE_KWS) or any(kw in right for kw in DEADLINE_KWS)
-            or RE_DEADLINE_TAIL.search(right)):
+            or RE_DEADLINE_TAIL.search(right) or RE_DEADLINE_FRONT.search(right)):
         return "deadline"
     if any(kw in left for kw in STALE_KWS):
         return "stale"
@@ -230,10 +234,16 @@ def extract_datetimes(text: str, base: datetime | None = None) -> list[DateHit]:
         add(m.group(0), day, m.span(), explicit_year=False)
 
     # 3) 今天 / 明天 / 后天
-    rel_map = {"今天": 0, "今日": 0, "当天": 0, "明天": 1, "明日": 1, "后天": 2, "大后天": 3}
+    rel_map = {"今天": 0, "今日": 0, "当天": 0, "明天": 1, "明日": 1, "后天": 2, "大后天": 3,
+               "今晚": 0, "明晚": 1}
+    # 只说「今晚」没给具体时刻时，默认 19:00 而不是 00:00
+    rel_hour = {"今晚": 19, "明晚": 19}
     for m in RE_RELDAY.finditer(src):
-        add(m.group(0), (base + timedelta(days=rel_map[m.group(1)])).replace(hour=0, minute=0),
-            m.span())
+        token = m.group(1)
+        day = (base + timedelta(days=rel_map[token])).replace(hour=0, minute=0)
+        if token in rel_hour:
+            day = day.replace(hour=rel_hour[token])
+        add(m.group(0), day, m.span())
 
     # 4) 本周五 / 下周一 / 周三
     for m in RE_WEEKDAY.finditer(src):
@@ -309,14 +319,21 @@ def pick_times(
     live = [h for h in hits if h.kind != "stale"] or hits  # 「原定X改为Y」只认 Y
     deadline = next((h.dt for h in live if h.kind == "deadline"), None)
     rescheduled = next((h.dt for h in live if h.kind == "reschedule"), None)
-    event = next((h.dt for h in live if h.kind == "event"), None)
+    event_hits = [h for h in live if h.kind == "event"]
+    # 多个事件时间时优先取带明确时刻的那个，避免选到只有日期、被默认成 09:00 的条目
+    event = next((h.dt for h in event_hits if h.has_time), None) or next(
+        (h.dt for h in event_hits), None
+    )
     unknown = [h for h in live if h.kind == "unknown"]
 
     if category in ("homework", "repair"):
-        if deadline is None:
+        # 改期后的时间即新的截止（「由原9月1日推迟到9月8日」）
+        if rescheduled is not None:
+            deadline = rescheduled
+        elif deadline is None:
             candidates = [h for h in live if h.kind != "event"] or live
             deadline = max(c.dt for c in candidates)  # 无关键词时取最晚时间点作截止
-        event = rescheduled or event
+        # 作业/报修以截止为主，只有明确的 event 语义才填 event_time（避免与 deadline 双填）
     else:
         event = rescheduled or event or (unknown[0].dt if unknown else None)
         if event is None and deadline is None:

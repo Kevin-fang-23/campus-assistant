@@ -12,7 +12,6 @@ import base64
 import json
 import logging
 import re
-import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from functools import lru_cache
@@ -22,6 +21,7 @@ from ..config import settings
 from ..models import Category
 from ..services import rule_extract
 from ..services.datetime_utils import pick_times
+from .llm_client import build_client_from_settings
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,17 @@ class BaseVLM(ABC):
 
     @abstractmethod
     def extract(
-        self, text: str, category: str, images: list[ImagePart] | None = None
+        self,
+        text: str,
+        category: str,
+        images: list[ImagePart] | None = None,
+        base: datetime | None = None,
     ) -> dict[str, Any]:
-        ...
+        """base 为时间基准，用于把「明天/本周五」等相对时间解析成绝对时间。
+
+        调用方应把 state["base_time"] 透传进来；留空则回退到 datetime.now()，
+        会导致评测不可复现（同一份样本在不同日期跑出不同结果）。
+        """
 
     def ocr_image(self, image: ImagePart) -> str:  # 供 OCR 兜底使用
         raise NotImplementedError
@@ -69,9 +77,13 @@ class MockVLM(BaseVLM):
         return cat, conf, {"scores": scores, "provider": self.name}
 
     def extract(
-        self, text: str, category: str, images: list[ImagePart] | None = None
+        self,
+        text: str,
+        category: str,
+        images: list[ImagePart] | None = None,
+        base: datetime | None = None,
     ) -> dict[str, Any]:
-        data = rule_extract.extract(text, category)
+        data = rule_extract.extract(text, category, base=base)
         data["extra"]["provider"] = self.name
         return data
 
@@ -83,16 +95,8 @@ class OpenAICompatVLM(BaseVLM):
     is_mock = False
 
     def __init__(self) -> None:
-        import httpx  # 延迟导入，未启用该 provider 时不强依赖
-
-        self._client = httpx.Client(
-            base_url=settings.vlm_base_url.rstrip("/"),
-            timeout=settings.vlm_timeout,
-            headers={
-                "Authorization": f"Bearer {settings.dashscope_api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+        # 鉴权、超时、重试统一由 llm_client 负责
+        self._client = build_client_from_settings()
 
     # ---- 内部 ----
     def _content(self, prompt: str, images: list[ImagePart] | None) -> list[dict]:
@@ -104,28 +108,11 @@ class OpenAICompatVLM(BaseVLM):
         return parts
 
     def _chat(self, prompt: str, images: list[ImagePart] | None, max_tokens: int = 1200) -> str:
-        payload = {
-            "model": settings.vlm_model,
-            "messages": [
-                {"role": "system", "content": "你是校园事务信息抽取助手，只输出 JSON，不要解释。"},
-                {"role": "user", "content": self._content(prompt, images)},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.1,
-        }
-        last_err: Exception | None = None
-        for attempt in range(settings.vlm_max_retries + 1):
-            try:
-                resp = self._client.post("/chat/completions", json=payload)
-                if resp.status_code in (429, 500, 502, 503, 504):
-                    raise RuntimeError(f"上游 {resp.status_code}: {resp.text[:200]}")
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                if attempt < settings.vlm_max_retries:
-                    time.sleep(1.5 * (attempt + 1))
-        raise RuntimeError(f"VLM 调用失败: {last_err}")
+        messages = [
+            {"role": "system", "content": "你是校园事务信息抽取助手，只输出 JSON，不要解释。"},
+            {"role": "user", "content": self._content(prompt, images)},
+        ]
+        return self._client.chat(messages, model=settings.vlm_model, max_tokens=max_tokens)
 
     @staticmethod
     def _parse_json(raw: str) -> dict:
@@ -141,7 +128,13 @@ class OpenAICompatVLM(BaseVLM):
         raise ValueError("模型未返回可解析 JSON")
 
     @staticmethod
-    def _to_dt(value: Any, fallback_text: str, kind: str, category: str) -> datetime | None:
+    def _to_dt(
+        value: Any,
+        fallback_text: str,
+        kind: str,
+        category: str,
+        base: datetime | None = None,
+    ) -> datetime | None:
         if isinstance(value, str) and value.strip():
             token = value.strip().replace("Z", "").replace("/", "-")
             for fmt in (None, "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
@@ -149,7 +142,7 @@ class OpenAICompatVLM(BaseVLM):
                     return datetime.fromisoformat(token) if fmt is None else datetime.strptime(token, fmt)
                 except ValueError:
                     continue
-            event, deadline, _ = pick_times(value, category=category)
+            event, deadline, _ = pick_times(value, category=category, base=base)
             return deadline if kind == "deadline" else event
         return None
 
@@ -171,15 +164,19 @@ class OpenAICompatVLM(BaseVLM):
             return cat, conf * 0.9, {"provider": "rule-fallback", "error": str(exc), "scores": scores}
 
     def extract(
-        self, text: str, category: str, images: list[ImagePart] | None = None
+        self,
+        text: str,
+        category: str,
+        images: list[ImagePart] | None = None,
+        base: datetime | None = None,
     ) -> dict[str, Any]:
-        today = datetime.now().strftime("%Y-%m-%d %A")
+        today = (base or datetime.now()).strftime("%Y-%m-%d %A")
         prompt = (
             f"今天是 {today}。这是一份校园{Category.LABELS.get(category, '')}材料，"
             f"请抽取关键信息，相对时间（明天/本周五）要换算成绝对时间。"
             f"严格按以下 JSON 结构输出：\n{_FIELD_SPEC}\n\n材料文本：\n{text[:6000]}"
         )
-        rule_data = rule_extract.extract(text, category)
+        rule_data = rule_extract.extract(text, category, base=base)
         try:
             data = self._parse_json(self._chat(prompt, images))
         except Exception as exc:  # noqa: BLE001
@@ -194,10 +191,12 @@ class OpenAICompatVLM(BaseVLM):
                 merged[key] = val.strip()
         merged["category"] = data.get("category") if data.get("category") in Category.ALL else category
         merged["event_time"] = (
-            self._to_dt(data.get("event_time"), text, "event", category) or rule_data["event_time"]
+            self._to_dt(data.get("event_time"), text, "event", category, base=base)
+            or rule_data["event_time"]
         )
         merged["deadline"] = (
-            self._to_dt(data.get("deadline"), text, "deadline", category) or rule_data["deadline"]
+            self._to_dt(data.get("deadline"), text, "deadline", category, base=base)
+            or rule_data["deadline"]
         )
         for key in ("contacts", "tags"):
             val = data.get(key)

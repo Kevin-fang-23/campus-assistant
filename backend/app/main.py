@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 try:
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.staticfiles import StaticFiles
 except ModuleNotFoundError:  # pragma: no cover - only for static analysis / minimal envs
     class _Router:
         def add_api_route(self, *args, **kwargs):
@@ -32,9 +34,13 @@ except ModuleNotFoundError:  # pragma: no cover - only for static analysis / min
         def __init__(self, *args, **kwargs):
             pass
 
+    class StaticFiles:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs):
+            pass
+
     FastAPI = _FastAPI
 
-from .api import documents, notices, search, tasks
+from .api import documents, notices, qa, search, tasks
 from .config import settings
 from .db import SessionLocal, init_db
 from .graph.pipeline import engine_name
@@ -80,6 +86,7 @@ app.include_router(documents.router)
 app.include_router(notices.router)
 app.include_router(tasks.router)
 app.include_router(search.router)
+app.include_router(qa.router)
 
 
 @app.get("/health", tags=["meta"], summary="健康检查与运行时能力")
@@ -96,6 +103,10 @@ def health() -> dict:
     }
 
 
-@app.get("/", include_in_schema=False)
-def root() -> dict:
-    return {"message": settings.app_name, "docs": "/docs", "health": "/health"}
+# ---- 生产模式：若前端已构建（frontend/dist），由后端直接托管静态页面 ----
+# 这样公网只需映射后端一个端口（8000），页面与 /api 同源、加载快
+# （构建产物是少量打包文件，不像 vite dev 有几百个小请求）。
+# 本地开发不受影响：仍可用 vite dev（5173）做热更新。
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
