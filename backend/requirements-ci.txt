@@ -1,0 +1,33 @@
+# CI 专用依赖集
+#
+# 与 requirements.txt 的差异：**只排除 OCR 引擎栈**
+#   - paddleocr / paddlepaddle   （体积大、下载慢，win/linux 平台差异大）
+#   - rapidocr-onnxruntime
+#
+# 为什么不装 OCR 也能测：tests/conftest.py 已把 OCR_PROVIDER 固定为 stub，
+# 测试路径根本不触达真实 OCR 引擎。OCR 相关的降级探测逻辑由 stub 覆盖。
+#
+# 为什么保留 faiss / langgraph：它们是**生产配置**下真正生效的后端
+#（faiss 向量索引、langgraph 流水线编排）。虽然代码有 numpy / 顺序执行兜底，
+# 但只测兜底路径会漏掉生产路径的缺陷，而这两者安装成本低，值得装。
+#
+# 不装 psycopg：测试不涉及 PostgreSQL，仅生产切库时需要（见 requirements.txt）。
+#
+# ⚠️ 维护约定：requirements.txt 里新增**核心**依赖时，这里要同步加一行。
+#    仅新增可选引擎（OCR/DB 驱动等）时不必。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+pydantic>=2.7
+pydantic-settings>=2.3
+python-multipart>=0.0.9
+pymupdf>=1.24
+numpy>=1.26
+httpx>=0.27
+pillow>=10.0
+pytest>=8.0
+
+# --- 生产路径（非兜底）依赖，CI 必须覆盖 ---
+langgraph>=0.2
+faiss-cpu>=1.8
