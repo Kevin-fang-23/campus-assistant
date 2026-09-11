@@ -46,7 +46,7 @@ from .db import SessionLocal, init_db
 from .graph.pipeline import engine_name
 from .middleware import RateLimitMiddleware
 from .providers.ocr import get_ocr
-from .providers.llm_client import close_shared_client, get_shared_client
+from .providers.llm_client import LLMError, close_shared_client, get_shared_client
 from .providers.vlm import get_vlm
 from .services.bm25 import get_bm25_index
 from .services.hybrid import rebuild_bm25
@@ -64,7 +64,16 @@ async def lifespan(app: Any):
     init_db()
     # 预热共享 LLM 客户端：把首次 DNS+TCP+TLS 握手的代价挪到启动阶段，
     # 而不是让第一个真实用户的请求承担（演示现场尤其在意首问延迟）。
-    get_shared_client()
+    #
+    # 必须**容错**：预热是纯优化，不是启动前提。未配置 API Key 时构造客户端会抛
+    # AuthError —— 而本项目的既定承诺是「无 Key 也能跑通全链路」（问答走抽取式降级）。
+    # 若在此中断，应用连带单元测试都起不来，把一个可选优化变成了硬依赖。
+    try:
+        get_shared_client()
+    except LLMError as exc:
+        logger.warning(
+            "跳过 LLM 客户端预热：%s（未配置 Key 时属预期，问答将走抽取式降级）", exc
+        )
     with SessionLocal() as db:
         store = get_store()
         store.load_from_db(db)

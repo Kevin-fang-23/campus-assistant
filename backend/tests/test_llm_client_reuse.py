@@ -316,3 +316,36 @@ def test_search_still_works_after_shared_client_close(wired) -> None:
         after = c.post("/api/search", json={"query": "实验验收", "top_k": 3}).json()
         assert after["hits"], "关停重建后检索不应静默返回空"
         assert get_embedding().degraded is False
+
+
+# --------------------------------------------------------------------------
+# 5. 启动健壮性：预热失败不得阻断启动
+# --------------------------------------------------------------------------
+def test_app_starts_when_prewarm_fails(monkeypatch) -> None:
+    """回归：LLM 客户端预热失败时，应用仍须正常启动。
+
+    背景（真实回归）：lifespan 里曾**无条件** `get_shared_client()` 做预热，
+    而未配置 API Key 时构造函数会抛 AuthError —— 导致应用根本起不来。
+    后果不只是少个优化：所有依赖 TestClient 启动应用的用例会**整体 error**，
+    且违背项目「无 Key 也能跑通全链路（问答走抽取式降级）」的既定前提。
+
+    这里把预热打成必然失败，断言应用仍可启动且 /health 正常。
+    """
+    from app.providers.llm_client import AuthError
+
+    def _boom():
+        raise AuthError("缺少 API Key：请在 .env 中配置 ALIYUN_API_KEY")
+
+    # main.py 直接 import 了该名字，需打在 main 模块上
+    monkeypatch.setattr("app.main.get_shared_client", _boom)
+
+    with TestClient(app) as c:  # 不应抛异常
+        resp = c.get("/health")
+        assert resp.status_code == 200, "预热失败不应阻断应用启动"
+        assert resp.json()["status"] == "ok"
+
+    # 预热失败后，无 Key 路径下的问答应走抽取式降级而非 500
+    with TestClient(app) as c:
+        monkeypatch.setattr(qa_module.settings, "dashscope_api_key", "")
+        resp = c.post("/api/qa", json={"query": "随便问一句", "top_k": 1})
+        assert resp.status_code == 200, f"无 Key 时问答不应报错：{resp.text[:200]}"
