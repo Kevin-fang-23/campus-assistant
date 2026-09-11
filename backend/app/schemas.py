@@ -195,6 +195,11 @@ class SearchHit(BaseModel):
     title: str
     category: str
     summary: str | None = None
+    # 句级选出的相关片段（与 /api/qa 的引用片段同一套逻辑）。
+    # 与 summary 的区别：summary 是抽取阶段生成的概括，与查询无关；
+    # snippet 是按**当前查询**挑出的原文句子，能直接支撑答案。
+    # 保持可选：无原文或选不出相关句时留空，前端回退展示 summary。
+    snippet: str | None = None
     deadline: datetime | None = None
     # ---- 混合检索的可解释性字段（向量路/BM25 路各自的表现）----
     match: str = "vector"                 # both | vector | bm25

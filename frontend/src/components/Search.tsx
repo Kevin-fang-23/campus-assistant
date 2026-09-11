@@ -200,38 +200,56 @@ export default function Search() {
           </div>
           {hits.hits.length === 0 && <div className="muted">没有匹配的历史通知。</div>}
           <ul className="hits">
-            {hits.hits.map((h) => (
-              <li key={h.notice_id} className="hit">
-                <div className="hit-head">
-                  <span
-                    className="badge sm"
-                    style={{ background: CATEGORY_COLORS[h.category] ?? "#6b7280" }}
-                  >
-                    {categoryLabel(h.category)}
-                  </span>
-                  {h.match && MATCH_LABELS[h.match] && (
+            {hits.hits.map((h) => {
+              // snippet 是后端按**当前查询**从原文选出的句子，能直接解释"为什么召回这条"，
+              // 因此优先展示；无原文或选不出相关句时回退 summary（抽取阶段的概括）。
+              const snippet = h.snippet?.trim() || null;
+              const summary = h.summary?.trim() || null;
+              // 短通知会在 snippet 里整篇返回，可能与 summary 逐字相同 —— 避免重复渲染两遍
+              const showSummary = Boolean(summary) && summary !== snippet;
+              return (
+                <li key={h.notice_id} className="hit">
+                  <div className="hit-head">
                     <span
                       className="badge sm"
-                      title={
-                        h.score_vector != null || h.score_bm25 != null
-                          ? `语义 ${h.score_vector ?? "—"} · 关键词 ${h.score_bm25 ?? "—"}`
-                          : undefined
-                      }
-                      style={{ background: MATCH_LABELS[h.match].color }}
+                      style={{ background: CATEGORY_COLORS[h.category] ?? "#6b7280" }}
                     >
-                      {MATCH_LABELS[h.match].text}
+                      {categoryLabel(h.category)}
                     </span>
+                    {h.match && MATCH_LABELS[h.match] && (
+                      <span
+                        className="badge sm"
+                        title={
+                          h.score_vector != null || h.score_bm25 != null
+                            ? `语义 ${h.score_vector ?? "—"} · 关键词 ${h.score_bm25 ?? "—"}`
+                            : undefined
+                        }
+                        style={{ background: MATCH_LABELS[h.match].color }}
+                      >
+                        {MATCH_LABELS[h.match].text}
+                      </span>
+                    )}
+                    <span className="hit-title">{h.title}</span>
+                    <span className="score">{(h.score * 100).toFixed(0)}%</span>
+                  </div>
+                  {snippet && (
+                    <div className="hit-snippet" title="按查询从通知原文中选出的相关片段">
+                      {snippet}
+                    </div>
                   )}
-                  <span className="hit-title">{h.title}</span>
-                  <span className="score">{(h.score * 100).toFixed(0)}%</span>
-                </div>
-                {h.summary && <div className="hit-summary">{h.summary}</div>}
-                <div className="hit-meta">
-                  <span>🕒 {formatDateTime(h.deadline)}</span>
-                  <span className="muted">通知 #{h.notice_id}</span>
-                </div>
-              </li>
-            ))}
+                  {showSummary && (
+                    <div className="hit-summary">
+                      {snippet && <span className="snippet-label">摘要</span>}
+                      {summary}
+                    </div>
+                  )}
+                  <div className="hit-meta">
+                    <span>🕒 {formatDateTime(h.deadline)}</span>
+                    <span className="muted">通知 #{h.notice_id}</span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

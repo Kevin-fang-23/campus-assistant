@@ -203,6 +203,22 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 .hit-title { font-weight: 600; flex: 1; }
 .score { color: var(--muted); font-size: 12px; }
 .hit-summary { color: var(--muted); font-size: 13px; margin: 6px 0; }
+/* 引用片段：左侧色条标示"这是通知原文"，与灰色的 summary 区分开。
+   white-space: pre-line 是必需的 —— 后端按原文区间切片，保留了海报体的换行，
+   默认的 white-space: normal 会把换行折叠成空格，条目会挤成一坨。 */
+.hit-snippet {
+  font-size: 13px;
+  color: var(--text);
+  margin: 6px 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--primary);
+  white-space: pre-line;
+}
+.snippet-label {
+  margin-right: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
 .hit-meta { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
 
 /* ---------- qa ---------- */

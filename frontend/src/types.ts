@@ -119,6 +119,12 @@ export interface SearchHit {
   title: string;
   category: string;
   summary: string | null;
+  /**
+   * 按当前查询选出的原文句级片段。与 summary 的分工：
+   * summary 是抽取阶段的概括、与查询无关；snippet 直接回答"为什么这条被召回"。
+   * 可选 —— 无原文时后端留空，前端回退展示 summary。
+   */
+  snippet?: string | null;
   deadline: string | null;
   /** 命中来源：both（两路都召回）/ vector（仅语义）/ bm25（仅关键词）。 */
   match?: "both" | "vector" | "bm25";

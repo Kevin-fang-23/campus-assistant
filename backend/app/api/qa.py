@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..models import Document, Notice
+from ..models import Notice
 from ..providers.llm_client import (
     LLMError,
     OpenAICompatClient,
@@ -27,7 +27,12 @@ from ..providers.llm_client import (
 )
 from ..schemas import AnswerOut, CitationOut, QAIn
 from ..services.hybrid import hybrid_search
-from ..services.snippet import select_context, select_snippet
+from ..services.notice_text import (
+    CONTEXT_MAX_CHARS,
+    SNIPPET_MAX_CHARS,
+    notice_context,
+    notice_snippet,
+)
 from ..services.vector_store import get_store
 
 logger = logging.getLogger(__name__)
@@ -46,9 +51,10 @@ _USER_PROMPT = """请依据下面的通知片段回答问题，引用来源用 [
 """
 
 # 单条通知进 context 的长度上限：太长既拖慢响应又稀释关键信息
-_CONTEXT_PER_NOTICE = 400
+# （上下限常量统一由 services/notice_text 定义，问答与检索共用同一份）
+_CONTEXT_PER_NOTICE = CONTEXT_MAX_CHARS
 # 引用片段（snippet）长度：S9 前端引用溯源高亮用
-_SNIPPET_LIMIT = 120
+_SNIPPET_LIMIT = SNIPPET_MAX_CHARS
 
 
 def _build_llm_client() -> OpenAICompatClient:
@@ -58,13 +64,6 @@ def _build_llm_client() -> OpenAICompatClient:
     见 ask() 中不使用 `with` 的原因说明。
     """
     return build_client_from_settings()
-
-
-def _raw_or_summary(notice: Notice, db: Document | None) -> str:
-    """优先用文档原文（信息最全），缺原文时回退摘要/标题。"""
-    if db is not None and db.raw_text:
-        return db.raw_text
-    return notice.summary or notice.title
 
 
 @router.post("", response_model=AnswerOut, summary="检索增强问答（RAG）：答案 + 引用片段")
@@ -80,17 +79,13 @@ def ask(payload: QAIn, db: Session = Depends(get_db)) -> AnswerOut:
         notice = db.get(Notice, hit.notice_id)
         if not notice:
             continue
-        document = db.get(Document, notice.document_id)
-        text = _raw_or_summary(notice, document)
         citations.append(
             CitationOut(
                 notice_id=notice.id,
                 title=notice.title,
                 # 句级选片：挑出与问题最相关的句子，而不是从字中间硬切。
                 # 硬切会切出残句（"…提交至学习通。截止时"），溯源展示不可读。
-                snippet=select_snippet(
-                    text, payload.query, title=notice.title, max_chars=_SNIPPET_LIMIT
-                ),
+                snippet=notice_snippet(db, notice, payload.query, max_chars=_SNIPPET_LIMIT),
                 score=round(hit.score, 4),
             )
         )
@@ -98,7 +93,7 @@ def ask(payload: QAIn, db: Session = Depends(get_db)) -> AnswerOut:
         # 原实现取前 400 字，若关键信息（截止时间/地点）落在其后，
         # 模型看不到就只能回答"未找到"，而库里其实有答案。
         sources.append(
-            select_context(text, payload.query, title=notice.title, max_chars=_CONTEXT_PER_NOTICE)
+            notice_context(db, notice, payload.query, max_chars=_CONTEXT_PER_NOTICE)
         )
 
     if not citations:

@@ -485,3 +485,89 @@ def test_api_llm_prompt_contains_answer_sentence(qa_client, monkeypatch) -> None
     assert "报名截止时间" in prompt, (
         "上下文里没有答案句 —— 说明仍在用硬截断，模型看不到关键信息"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. 端到端：接入 /api/search 结果页
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def search_client(qa_client):
+    """复用 qa_client 已入库的长海报语料，避免重复 ingest。"""
+    return qa_client
+
+
+def _search_hit_for(client, query: str) -> dict | None:
+    """在 /api/search 结果里找出本测试长海报那条命中。"""
+    resp = client.post("/api/search", json={"query": query, "top_k": 5})
+    assert resp.status_code == 200, resp.text
+    for h in resp.json()["hits"]:
+        if "智能硬件" in h["title"]:
+            return h
+    return None
+
+
+def test_search_hit_contains_snippet(search_client) -> None:
+    """端到端：/api/search 的命中应带 snippet，且是「答案句」而非开头的概括。"""
+    h = _search_hit_for(search_client, "创客季智能硬件工作坊报名什么时候截止")
+    assert h is not None, "未召回长海报通知，检查入库或检索"
+
+    assert "snippet" in h, "响应缺少 snippet 字段"
+    snippet = h["snippet"]
+    assert snippet, f"snippet 不应为空：{h!r}"
+    assert "报名截止时间" in snippet, f"片段没选到答案句：{snippet!r}"
+    assert len(snippet) <= 120, f"片段超出上限：{len(snippet)}"
+
+
+def test_search_snippet_beats_summary_for_long_notice(search_client) -> None:
+    """snippet 必须区别于 summary —— 这正是本次接入的意义。
+
+    summary 是抽取阶段的概括，与查询无关；搜索"地点在哪"时它答非所问。
+    """
+    h = _search_hit_for(search_client, "创客季智能硬件工作坊活动在哪里举办")
+    assert h is not None
+    assert h["snippet"] != h["summary"], (
+        "snippet 与 summary 相同 —— 说明没有按查询选句，退回了概括"
+    )
+    assert "地点" in h["snippet"], f"片段没选到地点句：{h['snippet']!r}"
+
+
+def test_search_keeps_backward_compatible_fields(search_client) -> None:
+    """契约兼容：加了 snippet 后，原有字段必须一个不少（前端老逻辑仍可用）。"""
+    resp = search_client.post("/api/search", json={"query": "创客工作坊", "top_k": 3})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) >= {"query", "backend", "hits"}
+    for h in body["hits"]:
+        for field in ("notice_id", "score", "title", "category", "summary", "deadline"):
+            assert field in h, f"原有字段 {field} 丢失，破坏向后兼容"
+
+
+def test_search_snippet_traces_back_to_source_text(search_client) -> None:
+    """强断言：snippet 必须能逐字追溯回通知原文，而非拼接/编造的文本。
+
+    取原文的路径：/api/search 命中 → /api/notices 拿 document_id
+    → /api/documents/{id} 拿 raw_text。回溯本身就是可追溯性的证明。
+    """
+    notices = {n["id"]: n for n in search_client.get("/api/notices").json()}
+
+    for query in ("宿舍报修怎么申请", "创客工作坊", "期末考试"):
+        resp = search_client.post("/api/search", json={"query": query, "top_k": 5})
+        assert resp.status_code == 200
+        for h in resp.json()["hits"]:
+            snippet = h.get("snippet")
+            assert snippet, f"查询 {query!r} 的命中未返回 snippet"
+
+            notice = notices.get(h["notice_id"])
+            if notice is None:
+                continue
+            detail = search_client.get(f"/api/documents/{notice['document_id']}")
+            if detail.status_code != 200:
+                continue
+            raw = (detail.json().get("raw_text") or "").strip()
+            if not raw:
+                continue
+            # 单句超长时后端会截断并补省略号，比对时去掉它
+            assert snippet in raw or snippet.rstrip("…") in raw, (
+                f"snippet 无法在原文中找到，可能被拼接或改动：\n"
+                f"  snippet={snippet!r}\n  raw={raw[:200]!r}"
+            )
