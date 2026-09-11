@@ -2,6 +2,7 @@ import type {
   Health,
   IngestResult,
   NoticeOut,
+  QAOut,
   SearchOut,
   StatsOut,
   TaskCreateIn,
@@ -136,6 +137,21 @@ export function deleteTask(id: number): Promise<void> {
 // ---------- search ----------
 export function search(query: string, top_k = 5): Promise<SearchOut> {
   return req<SearchOut>(`${BASE}/search`, {
+    method: "POST",
+    body: JSON.stringify({ query, top_k }),
+  });
+}
+
+// ---------- qa（检索增强问答）----------
+/**
+ * 检索增强问答：返回生成式答案 + 引用片段。
+ *
+ * 注意：后端在 LLM 不可用时会自行降级为抽取式回答（HTTP 仍为 200，
+ * degraded=true），因此前端**不需要**为 LLM 故障单独兜底，
+ * 只需按 degraded 展示不同提示即可。
+ */
+export function askQA(query: string, top_k = 5): Promise<QAOut> {
+  return req<QAOut>(`${BASE}/qa`, {
     method: "POST",
     body: JSON.stringify({ query, top_k }),
   });

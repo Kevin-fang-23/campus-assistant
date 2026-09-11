@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from typing import Any, Callable, Mapping
 
@@ -184,9 +185,14 @@ class OpenAICompatClient:
             },
         )
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ResponseFormatError(f"响应结构异常：{str(data)[:200]}") from exc
+        # 键存在但值为 None / 非字符串（部分网关在内容被安全策略拦截时返回 null）
+        # 不能直接返回——调用方会拿它去 strip()/拼接，最终以 500 暴露给用户
+        if not isinstance(content, str) or not content.strip():
+            raise ResponseFormatError(f"响应内容为空或非字符串：{str(data)[:200]}")
+        return content
 
     def embed(self, texts: list[str], model: str) -> list[list[float]]:
         data = self.post_json("/embeddings", {"model": model, "input": texts})
@@ -198,6 +204,15 @@ class OpenAICompatClient:
     def close(self) -> None:
         self._client.close()
 
+    @property
+    def is_closed(self) -> bool:
+        """连接池是否已关闭。
+
+        共享客户端靠这个属性实现自愈：万一有人误用 `with` 把它关掉，
+        下一次获取时会重建，而不是让整个进程带着一个废掉的池继续跑。
+        """
+        return self._client.is_closed
+
     def __enter__(self) -> OpenAICompatClient:
         return self
 
@@ -205,10 +220,10 @@ class OpenAICompatClient:
         self.close()
 
 
-def build_client_from_settings(
+def _construct_client(
     *, transport: httpx.BaseTransport | None = None, sleep_fn: Callable[[float], None] = time.sleep
 ) -> OpenAICompatClient:
-    """按当前配置构造客户端（VLM 与 Embedding 共用同一套鉴权与重试策略）。"""
+    """按当前配置**新建**一个客户端（总是产生新实例，含新连接池）。"""
     from ..config import settings
 
     return OpenAICompatClient(
@@ -221,3 +236,77 @@ def build_client_from_settings(
         transport=transport,
         sleep_fn=sleep_fn,
     )
+
+
+# ---------------------------------------------------------------------------
+# 进程级共享客户端（连接复用）
+#
+# 改造前：/api/qa 每次请求都 `build_client_from_settings()` 新建一个 httpx.Client，
+# 请求结束即 close。代价是**每个请求都要重做一次 DNS + TCP + TLS 握手**，
+# 对"检索 → 拼 prompt → 调 LLM"这种单次问答链路，握手开销占了不小比例。
+#
+# 改造后：整个进程共用一个客户端（因而共用一个连接池，含 keep-alive），
+# 生命周期由应用启动/关闭钩子托管。
+#
+# 为什么不用 lru_cache：lru_cache 会一直持有已关闭的实例。这里改为
+# 可检测 + 可重建 —— 万一有人误用 `with` 把共享客户端关掉，下次获取自动重建。
+# ---------------------------------------------------------------------------
+_shared: OpenAICompatClient | None = None
+_shared_lock = threading.Lock()
+
+
+def get_shared_client() -> OpenAICompatClient:
+    """获取进程级共享客户端（线程安全，已关闭则自动重建）。"""
+    global _shared
+    with _shared_lock:
+        if _shared is None or _shared.is_closed:
+            _shared = _construct_client()
+        return _shared
+
+
+def close_shared_client() -> None:
+    """关闭并释放共享客户端（应用关停时调用；测试中亦可用作重置）。"""
+    global _shared
+    with _shared_lock:
+        if _shared is not None:
+            _shared.close()
+            _shared = None
+
+
+class SharedClientRef:
+    """按需解析共享客户端的描述符，供 provider 持有"客户端引用"。
+
+    为什么 provider **不能**在 `__init__` 里把客户端存成普通属性：
+    共享客户端的生命周期由应用托管（启动预热、关停释放）。一旦它被关闭或重建，
+    provider 手里就是一份失效引用 —— 表现为 embedding 持续失败、降级到
+    local_hash（256 维），与已建索引（1024 维）不符，检索**静默返回 0 条**。
+
+    行为：
+    - 读取 → 每次从工厂取，因此共享实例被重建后自动生效；
+    - 赋值 → 存为覆盖值，保留测试注入 MockTransport 的缝隙。
+    """
+
+    _OVERRIDE = "_client_override"
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        override = obj.__dict__.get(self._OVERRIDE)
+        return override if override is not None else get_shared_client()
+
+    def __set__(self, obj, value) -> None:
+        obj.__dict__[self._OVERRIDE] = value
+
+
+def build_client_from_settings(
+    *, transport: httpx.BaseTransport | None = None, sleep_fn: Callable[[float], None] = time.sleep
+) -> OpenAICompatClient:
+    """按当前配置构造客户端（VLM 与 Embedding 共用同一套鉴权与重试策略）。
+
+    - 默认参数：返回**进程级共享客户端**，复用连接池（生产路径）；
+    - 显式传入 transport / sleep_fn：构造独立实例，供测试注入 MockTransport——
+      绝不污染共享实例，否则一个用例的 mock 会泄漏给其它用例。
+    """
+    if transport is not None or sleep_fn is not time.sleep:
+        return _construct_client(transport=transport, sleep_fn=sleep_fn)
+    return get_shared_client()

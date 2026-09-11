@@ -14,7 +14,7 @@ const NAV: { key: View; label: string; icon: string }[] = [
   { key: "upload", label: "导入", icon: "📥" },
   { key: "notices", label: "通知复核", icon: "📋" },
   { key: "tasks", label: "待办看板", icon: "✅" },
-  { key: "search", label: "语义检索", icon: "🔍" },
+  { key: "search", label: "知识库问答", icon: "🔍" },
 ];
 
 export default function App() {

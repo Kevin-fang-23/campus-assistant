@@ -62,6 +62,27 @@ class Settings(BaseSettings):
     qa_provider: str = "auto"
     qa_model: str = "qwen-plus"              # 纯文本问答模型，无需视觉能力，比 VL 模型便宜
 
+    # ---- 请求限流（保护上游 LLM 额度与单进程资源）----
+    # 三层：每 IP 每分钟（突发控制）→ 每 IP 每日（单源公平）→ 全局每日（总额度护栏）
+    # 0 表示该层不启用。改这些值即可整体放宽/收紧，无需改代码。
+    rate_limit_enabled: bool = True
+    # 信任 X-Forwarded-For / X-Real-IP：置于 ngrok 等反代之后必须开启，
+    # 否则所有请求会被视作同一来源；直连公网时保持 False，防止伪造头部绕过限流。
+    rate_limit_trust_proxy: bool = False
+
+    # 成本端点：/api/qa 每次请求消耗 1 次 LLM + 1 次 embedding
+    rate_limit_qa_per_min: int = 6
+    rate_limit_qa_per_ip_day: int = 60
+    rate_limit_qa_per_day: int = 300
+
+    # 成本端点：/api/documents/* 每次请求消耗 VLM + OCR 解析
+    rate_limit_ingest_per_min: int = 10
+    rate_limit_ingest_per_ip_day: int = 40
+    rate_limit_ingest_per_day: int = 200
+
+    # 其余 /api/* 只读接口：不花钱，仅防高频锤击
+    rate_limit_default_per_min: int = 120
+
     # ---- OCR ----
     # auto: paddleocr -> rapidocr -> vlm -> stub 依次探测
     ocr_provider: str = "auto"
@@ -75,6 +96,33 @@ class Settings(BaseSettings):
     embedding_dim: int = 256                  # local_hash 维度
     dedup_threshold: float = 0.90             # 余弦相似度高于此值判定重复通知
     search_top_k: int = 5
+    # 启动时若发现库内向量维度与当前后端不符（历史遗留/后端切换），
+    # 自动用当前后端重算全部向量。关掉则只告警、由人工触发 reindex。
+    reindex_on_dim_mismatch: bool = True
+
+    # ---- 混合检索（向量 + BM25）----
+    # 关掉即退回纯向量检索（与改造前行为一致），便于出问题时快速回滚。
+    hybrid_enabled: bool = True
+    # RRF 平滑常数 k：越大则靠前名次的优势越平缓。60 取自 RRF 原论文。
+    hybrid_rrf_k: int = 60
+    # 两路权重。默认 0.2:0.8（BM25 偏重），由 eval/run_retrieval_eval.py
+    # 在 29 条查询上 --sweep 实测确定：
+    #   · 纯向量 MRR@5=0.949、纯 BM25=0.977、混合最优 0.983（混合超过任一路）；
+    #   · 权重曲线呈 W 形（0.0/0.1/0.2 与 0.7-0.9 是高地，0.3-0.6 是低谷），
+    #     极差 3.4 个百分点，属小样本噪声；取低向量端的高地内取值，
+    #     而非刀尖上的 0.2 单点。
+    #   · 中文校园查询词面密集、领域词固定（课程名/房间号/电话/缩写），
+    #     BM25 天然强；向量路主要兜住"说法不同但意思一样"的查询。
+    # ⚠️ 语料从 16 条扩到上百条后，BM25 的字面碰撞会变多、向量的相对价值上升，
+    #    届时务必重跑 --sweep 重新定标，不要沿用本值。
+    hybrid_weight_vector: float = 0.2
+    hybrid_weight_bm25: float = 0.8
+    # 每路候选池大小。融合前多召回一些，才能让"向量排 12、BM25 排 2"
+    # 的文档有机会被顶上来；等于 top_k 就失去了融合的意义。
+    hybrid_fetch_k: int = 20
+    # BM25 参数：k1 控制词频饱和，b 控制文档长度归一化强度。1.5/0.75 为文献常用值。
+    bm25_k1: float = 1.5
+    bm25_b: float = 0.75
 
     # ---- 待办生成 ----
     remind_lead_hours: int = 24               # 截止前多久提醒

@@ -21,7 +21,7 @@ from ..config import settings
 from ..models import Category
 from ..services import rule_extract
 from ..services.datetime_utils import pick_times
-from .llm_client import build_client_from_settings
+from .llm_client import SharedClientRef, get_shared_client
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +94,12 @@ class OpenAICompatVLM(BaseVLM):
     name = "dashscope"
     is_mock = False
 
+    # 按需解析共享客户端，避免持有因关停/重建而失效的引用（见 SharedClientRef）
+    _client = SharedClientRef()
+
     def __init__(self) -> None:
         # 鉴权、超时、重试统一由 llm_client 负责
-        self._client = build_client_from_settings()
+        get_shared_client()
 
     # ---- 内部 ----
     def _content(self, prompt: str, images: list[ImagePart] | None) -> list[dict]:

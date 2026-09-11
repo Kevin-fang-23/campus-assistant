@@ -15,7 +15,7 @@ from ..graph.pipeline import run_pipeline
 from ..models import Document, DocKind, DocStatus, Notice, Task, TaskEvent, TaskStatus, utcnow
 from ..parsers import detect_kind, parse_bytes
 from ..schemas import DocumentOut, IngestResult, NoticeOut, TaskOut
-from .vector_store import get_store
+from .hybrid import index_notice
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -147,7 +147,7 @@ def ingest_bytes(
     db.flush()
 
     tasks = create_tasks(db, notice, state.get("task_drafts") or [])
-    get_store().upsert(db, notice)
+    index_notice(db, notice)
 
     doc.status = DocStatus.PARSED
     db.commit()
@@ -197,6 +197,6 @@ def regenerate_tasks(db: Session, notice: Notice, base_time: datetime | None = N
     }
     drafts = todo_gen_node(state).get("task_drafts") or []  # type: ignore[arg-type]
     tasks = create_tasks(db, notice, drafts)
-    get_store().upsert(db, notice)
+    index_notice(db, notice)
     db.commit()
     return tasks

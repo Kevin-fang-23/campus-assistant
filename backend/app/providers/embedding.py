@@ -10,11 +10,15 @@ from functools import lru_cache
 import numpy as np
 
 from ..config import settings
-from .llm_client import build_client_from_settings
+from .llm_client import SharedClientRef, get_shared_client
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_SPLIT = re.compile(r"[\s,。，；;：:！!？?、\"'（）()\[\]【】/\\|_\-]+")
+
+# text-embedding-v4 的输出维度。集中成常量，供向量库在维度告警中引用，
+# 避免在多处硬编码魔数导致告警信息与实现脱节。
+DASHSCOPE_DIM = 1024
 
 
 class BaseEmbedding(ABC):
@@ -27,6 +31,21 @@ class BaseEmbedding(ABC):
 
     def embed_one(self, text: str) -> np.ndarray:
         return self.embed([text])[0]
+
+    @property
+    def active_name(self) -> str:
+        """**实际**产出向量的后端名。
+
+        与 name（配置的后端）区分：DashScopeEmbedding 在接口不可用时会回退到
+        本地哈希向量，此时必须报 local_hash，否则 /health、/api/search、
+        /api/qa 的 backend 字段会谎报，前端与排查都会被误导。
+        """
+        return self.name
+
+    @property
+    def degraded(self) -> bool:
+        """是否发生了运行时回退。默认（无回退机制的 provider）恒为 False。"""
+        return False
 
 
 class LocalHashEmbedding(BaseEmbedding):
@@ -67,13 +86,48 @@ class LocalHashEmbedding(BaseEmbedding):
 class DashScopeEmbedding(BaseEmbedding):
     name = "dashscope"
 
+    # 按需解析共享客户端，而非在 __init__ 里存一份失效引用
+    # （共享实例被关停/重建后仍能自动拿到可用的那个，见 SharedClientRef 说明）
+    _client = SharedClientRef()
+
     def __init__(self) -> None:
-        self.dim = 1024
-        # 与 VLM 共用同一套鉴权 / 超时 / 重试策略
-        self._client = build_client_from_settings()
+        self.dim = DASHSCOPE_DIM
         self._fallback = LocalHashEmbedding()
+        self._degraded = False
+        # 提前构造一次以校验 API Key：缺 Key 时抛 AuthError，
+        # 由 get_embedding() 捕获后回退到 LocalHashEmbedding（保持原有行为）。
+        get_shared_client()
+
+    @property
+    def degraded(self) -> bool:
+        return self._degraded
+
+    @property
+    def active_name(self) -> str:
+        return self._fallback.name if self._degraded else self.name
+
+    def _degrade(self, exc: Exception) -> None:
+        """切到本地哈希并**粘滞**（本进程内不再尝试上游）。
+
+        为什么必须粘滞：local_hash 维度（256）与 dashscope（1024）不同，
+        若允许后端来回切换，向量维度就会反复翻转，进而污染向量索引
+        （详见 VectorStore._append 的维度守卫）。
+        宁可确定性地降级 + 如实上报，也不要静默混用两种维度的向量。
+        """
+        self._degraded = True
+        self.dim = self._fallback.dim
+        logger.error(
+            "Embedding 接口不可用，本进程后续全部改用本地哈希向量（%s，维度 %d）；"
+            "backend 将如实标记为 %s。原因: %s",
+            self._fallback.name,
+            self._fallback.dim,
+            self.active_name,
+            exc,
+        )
 
     def embed(self, texts: list[str]) -> np.ndarray:
+        if self._degraded:  # 已判定上游不可用，直接走本地，不再白耗额度
+            return self._fallback.embed(texts)
         try:
             vecs = np.array(
                 self._client.embed([t[:2000] for t in texts], model=settings.embedding_model),
@@ -83,7 +137,7 @@ class DashScopeEmbedding(BaseEmbedding):
             self.dim = vecs.shape[1]
             return vecs / np.maximum(norms, 1e-9)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Embedding 接口失败，回退本地哈希向量: %s", exc)
+            self._degrade(exc)
             return self._fallback.embed(texts)
 
 

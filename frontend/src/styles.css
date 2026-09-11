@@ -205,6 +205,27 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 .hit-summary { color: var(--muted); font-size: 13px; margin: 6px 0; }
 .hit-meta { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
 
+/* ---------- qa ---------- */
+.answer {
+  margin-top: 10px; padding: 14px; background: var(--panel-2);
+  border-radius: 9px; font-size: 14px; line-height: 1.75; white-space: pre-wrap;
+}
+/* 回答中的 [1] 与引用列表的编号共用同一视觉，方便对照溯源 */
+.cite-mark {
+  display: inline-block; background: #eaf1ff; color: var(--primary-d);
+  border-radius: 5px; padding: 0 5px; margin: 0 2px;
+  font-size: 12px; font-weight: 600;
+}
+.citations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.citation { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.citation-head { display: flex; align-items: center; gap: 8px; }
+.citation-title { font-weight: 600; flex: 1; }
+.citation-snippet {
+  color: var(--muted); font-size: 13px; margin: 8px 0 6px;
+  padding-left: 10px; border-left: 2px solid var(--border);
+  white-space: pre-wrap;
+}
+
 @media (max-width: 900px) {
   .board { grid-template-columns: 1fr 1fr; }
   .grid2 { grid-template-columns: 1fr; }

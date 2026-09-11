@@ -114,17 +114,43 @@ export interface TaskUpdateIn {
 
 export interface SearchHit {
   notice_id: number;
+  /** 归一化后的混合检索相关性 [0,1]（向量 + BM25 加权 RRF），非概率。 */
   score: number;
   title: string;
   category: string;
   summary: string | null;
   deadline: string | null;
+  /** 命中来源：both（两路都召回）/ vector（仅语义）/ bm25（仅关键词）。 */
+  match?: "both" | "vector" | "bm25";
+  score_vector?: number | null;
+  score_bm25?: number | null;
 }
 
 export interface SearchOut {
   query: string;
   backend: string;
   hits: SearchHit[];
+}
+
+/** 问答引用片段：与 AnswerOut.answer 中的 [编号] 一一对应（1-based）。 */
+export interface QACitationOut {
+  notice_id: number;
+  title: string;
+  snippet: string;
+  score: number;
+}
+
+/**
+ * POST /api/qa 响应。
+ * degraded=true 表示生成式回答不可用（未配置 Key / 服务端强制 mock / LLM 调用失败），
+ * 此时 answer 退化为 top1 引用片段，仍可直接展示。
+ */
+export interface QAOut {
+  query: string;
+  answer: string;
+  citations: QACitationOut[];
+  backend: string;
+  degraded: boolean;
 }
 
 export interface StatsOut {
@@ -145,6 +171,14 @@ export interface Health {
   pipeline_engine: string;
   vlm: { provider: string; model: string; mock: boolean };
   ocr: string;
-  vector: { backend: string; indexed: number };
+  vector: {
+    backend: string;
+    indexed: number;
+    /** 配置的后端（如 dashscope）。 */
+    configured_embedding?: string;
+    /** 实际生效的后端：上游不可用时回退为 local_hash，与 configured 不同即表示已降级。 */
+    active_embedding?: string;
+    embedding_degraded?: boolean;
+  };
   database: string;
 }

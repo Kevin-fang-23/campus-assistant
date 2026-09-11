@@ -189,11 +189,17 @@ class SearchIn(BaseModel):
 
 class SearchHit(BaseModel):
     notice_id: int
+    # score 是**归一化后的混合检索相关性**（向量 + BM25 加权 RRF），
+    # 取值 [0,1] 但语义是"相对相关性"，不是概率。
     score: float
     title: str
     category: str
     summary: str | None = None
     deadline: datetime | None = None
+    # ---- 混合检索的可解释性字段（向量路/BM25 路各自的表现）----
+    match: str = "vector"                 # both | vector | bm25
+    score_vector: float | None = None     # 余弦相似度
+    score_bm25: float | None = None       # 原始 BM25 分
 
 
 class SearchOut(BaseModel):
