@@ -15,7 +15,13 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.main import app
 from app.services.bm25 import BM25Index, tokenize
-from app.services.hybrid import fuse, hybrid_search, reset_indexes
+from app.services.hybrid import (
+    fuse,
+    hybrid_search,
+    is_relevant,
+    reset_indexes,
+    shared_term_count,
+)
 
 # ---------------------------------------------------------------------------
 # 1. 分词
@@ -252,6 +258,17 @@ def client():
         yield c
 
 
+def _reload_indexes_from_db() -> None:
+    """转发到 conftest 的共享实现（保持本文件内调用点可读）。
+
+    收尾为什么必须重建索引、以及不重建会导致什么后果，
+    详见 `tests/conftest.py::reload_indexes_from_db` 的说明。
+    """
+    from tests.conftest import reload_indexes_from_db
+
+    reload_indexes_from_db()
+
+
 def test_search_response_exposes_match_info(client: TestClient) -> None:
     """接口需暴露"靠哪一路命中"，让混合检索可被看见/排查。"""
     resp = client.post("/api/search", json={"query": "线性代数 作业", "top_k": 5})
@@ -352,11 +369,13 @@ def test_index_notice_writes_both_indexes(client: TestClient) -> None:
         assert get_bm25_index().search("混合索引探针", top_k=3), "写入后应可被检索到"
 
         # 清理，避免污染其它用例
-        get_bm25_index().remove(notice.id)
         db.delete(notice)
         db.delete(doc)
         db.commit()
 
+    # 向量索引没有单条删除接口，必须按库重建 —— 否则会留下孤儿
+    #（见 _reload_indexes_from_db 的说明：那是"单跑绿、全量红"的根源）
+    _reload_indexes_from_db()
     assert get_bm25_index().size == before_size
 
 
@@ -399,15 +418,163 @@ def test_bm25_indexes_raw_body_not_just_extracted_fields(client: TestClient) -> 
         assert hits, "正文里的手机号必须能被 BM25 搜到（需索引 raw_text）"
         assert hits[0][0] == notice.id, f"应命中该通知，实际 {hits}"
 
-        idx.remove(notice.id)
         db.delete(notice)
         db.delete(doc)
         db.commit()
 
+    # 同 test_index_notice_writes_both_indexes：向量索引需按库重建，避免孤儿
+    _reload_indexes_from_db()
+
 
 def test_reset_indexes_clears_bm25() -> None:
+    """reset_indexes() 必须把 BM25 单例清空。
+
+    注意收尾：`reset_indexes()` 只是把单例置 None（下次访问才懒重建），
+    因此在**会话级共享**的测试进程里，这条用例会顺手毁掉后面所有用例
+    （含本次新增的相关性阈值判定，它依赖 BM25 路提供词面信号）所依赖的索引。
+    这正是"单独跑绿、全量跑红"的又一来源 —— 必须在使用后按库重建。
+
+    历史背景：本用例起初没有收尾，导致 `test_search_filters_irrelevant_query_end_to_end`
+    等用例在全量运行时 BM25 为空 → hybrid 静默退回纯向量 → 阈值判定的
+    BM25 信号消失 → filtered 恒为 False。
+    """
     from app.services.bm25 import get_bm25_index
 
     get_bm25_index().add(999, "临时文档")
     reset_indexes()
     assert get_bm25_index().size == 0
+
+    # 收尾：把索引恢复成「库里有什么就索引什么」，避免影响后续用例
+    _reload_indexes_from_db()
+
+
+# ---------------------------------------------------------------------------
+# 5. 相关性阈值（#6b）
+# ---------------------------------------------------------------------------
+# 判据是「查询与文档共享的二字及以上词个数」。以下用例把这条判据的
+# **反面**也钉住：单字重合必须**不**算相关 —— 那正是分数阈值失效的原因。
+def test_shared_term_count_ignores_single_chars() -> None:
+    """单字重合不算相关 —— 这是整个阈值方案成立的前提。
+
+    "今天天气怎么样" 与正文里的 "明天" 共享一个 '天' 字，若把单字算进去，
+    这条查询就会"看起来相关"，阈值也就形同虚设。
+    """
+    assert shared_term_count("今天天气怎么样", "希望后勤师傅明天上午上门处理") == 0
+    # 单字查询本身没有二字词，与任何文本的重合都是 0
+    assert shared_term_count("天", "明天天气") == 0
+
+
+def test_shared_term_count_counts_two_char_overlap() -> None:
+    assert shared_term_count("线性代数作业", "《线性代数》期末复习提纲") >= 2
+
+
+def test_shared_term_count_reuses_bm25_tokenizer_ascii() -> None:
+    """ASCII 串按整串比对（与 BM25 同一切词），房间号/缩写要能判定为相关。"""
+    assert shared_term_count("格物楼C407", "习题课地点改为格物楼C407") >= 1
+
+
+def test_is_relevant_respects_threshold(monkeypatch) -> None:
+    from app.services.hybrid import RetrievalHit
+
+    hit = RetrievalHit(
+        notice_id=1, score=0.9, score_vector=0.5, score_bm25=3.0, match="both"
+    )
+    texts = {1: "关于开放夜间自习教室的通知\n期末考试周期间开放通宵自习教室。"}
+
+    monkeypatch.setattr(settings, "search_min_bigram_overlap", 1)
+    assert is_relevant(hit, "通宵自习教室在哪", texts) is True
+    assert is_relevant(hit, "今天天气怎么样", texts) is False
+
+    # 关掉阈值（0）时一律视为相关 —— 可回滚到旧行为
+    monkeypatch.setattr(settings, "search_min_bigram_overlap", 0)
+    assert is_relevant(hit, "今天天气怎么样", texts) is True
+
+
+def test_is_relevant_missing_text_defaults_to_open(monkeypatch) -> None:
+    """拿不到文本时必须**放开**而不是收紧：宁可多给一条，也别丢掉真实命中。"""
+    from app.services.hybrid import RetrievalHit
+
+    monkeypatch.setattr(settings, "search_min_bigram_overlap", 5)
+    hit = RetrievalHit(
+        notice_id=42, score=0.9, score_vector=None, score_bm25=None, match="vector"
+    )
+    assert is_relevant(hit, "任意查询", {}) is True
+
+
+def test_search_filters_irrelevant_query_end_to_end(client: TestClient) -> None:
+    """端到端：与全库零词面交集的查询应返回空列表并置 filtered=True。
+
+    这是本次改造的产品语义 —— "没找到"就如实说，而不是硬凑 top-k。
+
+    查询选 `红楼梦作者是谁` 而非"今天天气怎么样"：后者与测试库里的
+    《人工智能前沿讲座》会共享 bigram（实测重合=1）而侥幸留下一条，
+    测试就变成了"看库里有哪几条数据"，换个库状态就红。
+    这里要钉的是**机制**（零交集必被拦），不是某条查询的运气。
+    """
+    resp = client.post("/api/search", json={"query": "红楼梦作者是谁", "top_k": 5})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hits"] == [], f"零交集查询不应返回结果，实际：{body['hits']}"
+    assert body["filtered"] is True, "应标记为「因阈值过滤而空」，供前端区分文案"
+
+
+def test_search_keeps_real_results_after_threshold(client: TestClient) -> None:
+    """阈值不得误杀真实查询 —— 开启阈值后正常的检索必须照常返回结果。"""
+    resp = client.post("/api/search", json={"query": "线性代数 作业", "top_k": 5})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hits"], "真实查询被阈值误杀了"
+
+
+def test_filtered_flag_only_set_when_result_is_emptied(client: TestClient) -> None:
+    """`filtered` 只在**结果被清空**时置位，有结果时恒为 False。
+
+    回归：早期实现用 `len(kept) < len(hits)` 判定，而候选池是故意多召回的
+    （hybrid_fetch_k=20），几乎总有边缘候选被丢 —— 于是这个标志位恒为 True、
+    彻底失去信息量，前端也就没法区分两种空态文案。
+    """
+    # 有结果：即使候选池里有条目被丢，也不该置位
+    ok = client.post("/api/search", json={"query": "线性代数 作业", "top_k": 5}).json()
+    assert ok["hits"]
+    assert ok["filtered"] is False
+
+    # 无结果但库里非空：这时才置位（正是前端要区分的场景）
+    empty = client.post("/api/search", json={"query": "红楼梦作者是谁", "top_k": 5}).json()
+    assert empty["hits"] == []
+    assert empty["filtered"] is True
+
+
+def test_search_threshold_can_be_disabled(client: TestClient, monkeypatch) -> None:
+    """search_min_bigram_overlap=0 时必须退回旧行为（恒返回 top-k）。"""
+    monkeypatch.setattr(settings, "search_min_bigram_overlap", 0)
+    resp = client.post("/api/search", json={"query": "红楼梦作者是谁", "top_k": 3})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hits"], "关闭阈值后应退回「恒返回 top-k」的旧行为"
+    assert body["filtered"] is False
+
+
+def test_vector_index_has_no_orphans(client: TestClient) -> None:
+    """向量索引条数必须等于库内通知数 —— 不许有孤儿。
+
+    回归：早期用例（test_index_notice_writes_both_indexes /
+    test_bm25_indexes_raw_body_not_just_extracted_fields）写入临时通知后
+    只清 BM25 与 DB，**忘了向量索引没有单条删除**，于是留下孤儿。
+    后果是可检索范围大于库内容，且随执行顺序变化 ——
+    相关性阈值用例因此出现"单跑绿、全量跑红"。
+
+    这条断言把不变量钉死：任何新增用例若再泄漏索引，会在这里立刻暴露，
+    而不是变成一个隐蔽的顺序依赖。
+    """
+    from sqlalchemy import func, select
+
+    from app.db import SessionLocal
+    from app.models import Notice
+    from app.services.vector_store import get_store
+
+    with SessionLocal() as db:
+        n_notices = db.execute(select(func.count(Notice.id))).scalar_one()
+    assert get_store().size == n_notices, (
+        f"向量索引 {get_store().size} 条 != 库内通知 {n_notices} 条："
+        "说明有用例写入后未清理索引（见 _reload_indexes_from_db）"
+    )

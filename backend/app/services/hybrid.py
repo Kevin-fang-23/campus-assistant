@@ -21,6 +21,26 @@
         /api/search               /api/qa
         （检索命中列表）           （拼 [编号] 上下文）
 
+## 相关性阈值（"未找到相关内容"）
+
+检索**恒返回 top-k** 会带来一个产品问题：问"今天天气怎么样"也会给出 3 条通知，
+看着像在胡答。因此在融合后加一道相关性判定（`filter_by_relevance`）：
+
+    候选文档与查询共享的「二字及以上词」个数  >=  search_min_bigram_overlap
+
+为什么**不是**用分数做阈值 —— 实测三种分数判据全部失败（区间重叠）：
+
+| 判据 | 噪声查询最高分 | 真实查询最低分 | 可分 |
+|---|---|---|---|
+| BM25 绝对分 | 3.773 | 2.872 | ❌ |
+| 余弦相似度 | 0.154 | 0.043 | ❌ |
+| 句级选片分 | 26.000 | 3.422 | ❌ |
+
+根因是**单字重合**在中文里必然发生（"今天天气"撞"明天"里的"天"）。
+改数二字及以上的重合即可过滤掉偶然碰撞，且 T=1 时真实查询误杀为 0/129。
+
+详见 `backend/eval/RETRIEVAL_BASELINE.md` 与 `run_retrieval_eval.py --calibrate`。
+
 ## 为什么用 RRF（Reciprocal Rank Fusion）而不是加权分数相加
 
 两路分数**不可直接相加**：余弦相似度落在 [-1,1] 且随 embedding 模型变化，
@@ -52,7 +72,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from .bm25 import get_bm25_index
+from .bm25 import get_bm25_index, tokenize
 from .vector_store import get_store
 
 logger = logging.getLogger(__name__)
@@ -83,6 +103,77 @@ class RetrievalHit:
 
 def _contribution(rank: int | None, weight: float, k: int) -> float:
     return weight / (k + rank) if rank else 0.0
+
+
+# ---------------------------------------------------------------------------
+# 相关性判定（阈值）
+# ---------------------------------------------------------------------------
+# 「共享二字词」= 查询与文档共同拥有的、长度 ≥2 的 term。
+# 直接复用 BM25 的 tokenize：它产出的中文 term 本身就是相邻双字（bigram），
+# 英文/数字串则是整串（如 `b203`、`cet`）—— 两者都满足「长度 ≥2」，
+# 且与检索路径用的是同一套切词，不会出现"检索能命中但判定说无关"的不一致。
+def _meaningful_terms(text: str) -> set[str]:
+    """取出文本里所有长度 ≥2 的 term（即"二字及以上"的信息单位）。
+
+    刻意排除 **单字**（长度 1 的 CJK 字符）：
+    中文里单字碰撞是必然的 —— "今天天气怎么样" 会与 "明天上午10点" 共享 '天'，
+    "量子纠缠" 会与 "期末周期间" 共享 '期'。这类重合不携带语义信息，
+    实测正是它导致分数阈值全部失效（见 RETRIEVAL_BASELINE.md 第六节）。
+    """
+    return {t for t in tokenize(text) if len(t) >= 2}
+
+
+def shared_term_count(query: str, doc_text: str) -> int:
+    """查询与文档共享的「二字及以上词」个数（去重）。
+
+    这是阈值判定的核心信号。返回计数而非比率：比率会被长文档稀释，
+    而我们要回答的是"这两个文本有没有实质的词面交集"，与文档长度无关。
+    """
+    q = _meaningful_terms(query)
+    if not q:
+        return 0
+    return len(q & _meaningful_terms(doc_text))
+
+
+def is_relevant(hit: RetrievalHit, query: str, doc_texts: dict[int, str]) -> bool:
+    """该命中是否「与查询足够相关」。
+
+    doc_texts 由调用方提供（notice_id -> 索引文本），避免在这里查库 ——
+    保持本模块的纯函数性质，便于单测与离线评测复用。
+
+    查不到文本时返回 True（**放开**而非收紧）：宁可多给一条结果，
+    也不要因为拿不到文本就把真实命中丢掉。
+    """
+    threshold = settings.search_min_bigram_overlap
+    if threshold <= 0:  # 关闭判定
+        return True
+    text = doc_texts.get(hit.notice_id)
+    if text is None:
+        return True
+    return shared_term_count(query, text) >= threshold
+
+
+def filter_by_relevance(
+    hits: list[RetrievalHit], query: str, doc_texts: dict[int, str]
+) -> tuple[list[RetrievalHit], bool]:
+    """按相关性阈值过滤命中，返回 (保留的命中, 是否**因过滤而结果为空**)。
+
+    第二个返回值的语义刻意收窄为「是否因为阈值导致一条都没剩下」，
+    而不是「是否有任何一条被丢弃」。原因：
+      · 候选池本来就故意多召回（`hybrid_fetch_k`），几乎总会有边缘候选被丢，
+        若那种情况也置 True，这个标志位就恒为 True、失去信息量；
+      · 前端唯一需要它区分的是两种**空结果**的文案：
+          空 + filtered=True  → 「未找到相关内容」（有候选，但都不相关）
+          空 + filtered=False → 「没有匹配的历史通知」（库里确实没有）
+    """
+    if settings.search_min_bigram_overlap <= 0:
+        return hits, False
+    kept = [h for h in hits if is_relevant(h, query, doc_texts)]
+    emptied = not kept and bool(hits)
+    if emptied and settings.search_keep_if_filtered:
+        # 灰度观察模式：只标记不丢弃，便于在生产上看阈值会拦掉什么
+        return hits, True
+    return kept, emptied
 
 
 def fuse(
@@ -185,6 +276,61 @@ def hybrid_search(query: str, top_k: int | None = None) -> list[RetrievalHit]:
         w_bm25=settings.hybrid_weight_bm25,
     )
     return fused[:k]
+
+
+# ---------------------------------------------------------------------------
+# 带相关性判定的检索入口（供 API 使用）
+# ---------------------------------------------------------------------------
+def search_docs_text(db: Session, notice_ids: list[int]) -> dict[int, str]:
+    """批量取出若干通知的**索引文本**（等价 BM25 路文本），用于相关性判定。
+
+    必须与 `bm25_text` 一致：判定要看的正是"检索时到底比对了什么字符串"，
+    若这里换成 title 或 summary，就会出现"检索命中但判定说无关"的割裂。
+    """
+    if not notice_ids:
+        return {}
+    from sqlalchemy import select
+
+    from ..models import Document, Notice
+
+    rows = (
+        db.execute(select(Notice).where(Notice.id.in_(notice_ids))).scalars().all()
+    )
+    # 先把用到的正文一次性捞出来，避免逐条 db.get 造成 N+1
+    doc_ids = [n.document_id for n in rows if n.document_id]
+    raws: dict[int, str] = {}
+    if doc_ids:
+        docs = (
+            db.execute(select(Document).where(Document.id.in_(doc_ids))).scalars().all()
+        )
+        raws = {d.id: d.raw_text or "" for d in docs}
+
+    base_text = get_store().build_text
+    out: dict[int, str] = {}
+    for n in rows:
+        parts = [base_text(n)]
+        raw = raws.get(n.document_id) if n.document_id else None
+        if raw:
+            parts.append(raw)
+        out[n.id] = "\n".join(p for p in parts if p)
+    return out
+
+
+def hybrid_search_filtered(
+    db: Session, query: str, top_k: int | None = None
+) -> tuple[list[RetrievalHit], bool]:
+    """混合检索 + 相关性阈值过滤，返回 (命中, 是否有命中被过滤)。
+
+    多召回一些再过滤：若直接按 top_k 取，过滤后可能只剩 1 条，
+    而其实第 k+1 条是相关的。因此候选池取 `hybrid_fetch_k`，过滤完再截断。
+    """
+    k = top_k or settings.search_top_k
+    # 阈值开启时多取候选，避免"过滤后不足 top_k 但后面其实有相关结果"
+    fetch = max(settings.hybrid_fetch_k, k) if settings.search_min_bigram_overlap > 0 else k
+    hits = hybrid_search(query, fetch)
+    texts = search_docs_text(db, [h.notice_id for h in hits])
+    kept, filtered = filter_by_relevance(hits, query, texts)
+    return kept[:k], filtered
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..models import Notice
 from ..schemas import SearchHit, SearchIn, SearchOut
-from ..services.hybrid import hybrid_search
+from ..services.hybrid import hybrid_search_filtered
 from ..services.notice_text import notice_snippet
 from ..services.vector_store import get_store
 
@@ -19,8 +19,14 @@ def semantic_search(payload: SearchIn, db: Session = Depends(get_db)) -> SearchO
     # 混合检索：向量（语义）与 BM25（字面精确）加权 RRF 融合。
     # 返回的 match / score_vector / score_bm25 让"这条是靠哪一路命中的"可被看见，
     # 便于演示与排查（例如精确房间号只有 BM25 能命中）。
+    #
+    # 融合后再过一道**相关性阈值**：候选与查询必须有至少 N 个共享二字词，
+    # 否则判为无关并丢弃、置 filtered=True。没有这道判定时，
+    # 问"今天天气怎么样"也会一本正经地返回 3 条通知，像是胡答。
+    raw_hits, filtered = hybrid_search_filtered(db, payload.query, payload.top_k)
+
     hits: list[SearchHit] = []
-    for hit in hybrid_search(payload.query, payload.top_k):
+    for hit in raw_hits:
         notice = db.get(Notice, hit.notice_id)
         if not notice:
             continue
@@ -41,4 +47,6 @@ def semantic_search(payload: SearchIn, db: Session = Depends(get_db)) -> SearchO
                 score_bm25=round(hit.score_bm25, 4) if hit.score_bm25 is not None else None,
             )
         )
-    return SearchOut(query=payload.query, backend=store.backend, hits=hits)
+    return SearchOut(
+        query=payload.query, backend=store.backend, hits=hits, filtered=filtered
+    )

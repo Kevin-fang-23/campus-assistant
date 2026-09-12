@@ -198,7 +198,18 @@ export default function Search() {
             检索结果
             <span className="muted"> · 引擎 {hits.backend}</span>
           </div>
-          {hits.hits.length === 0 && <div className="muted">没有匹配的历史通知。</div>}
+          {hits.hits.length === 0 &&
+            // 两种空态必须给不同文案 —— 这正是后端 filtered 字段存在的理由：
+            //   filtered=true  有候选，但都被相关性阈值判为无关（问的大概率不是校园事务）
+            //   filtered=false 库里确实没有相关内容（或阈值未开启）
+            // 合并成一句"没有匹配的历史通知"会让第一种情况显得像系统坏了。
+            (hits.filtered ? (
+              <div className="muted">
+                未找到相关内容。换一个说法，或改用通知里的关键词（课程名、地点）试试。
+              </div>
+            ) : (
+              <div className="muted">没有匹配的历史通知。</div>
+            ))}
           <ul className="hits">
             {hits.hits.map((h) => {
               // snippet 是后端按**当前查询**从原文选出的句子，能直接解释"为什么召回这条"，

@@ -211,6 +211,12 @@ class SearchOut(BaseModel):
     query: str
     backend: str
     hits: list[SearchHit]
+    # 是否**因相关性阈值导致结果为空的**（注意：不是"有任意一条被丢弃"）。
+    # 前端据此区分两种"空结果"：
+    #   filtered=True  → 有候选但都不相关 → 提示「未找到相关内容」
+    #   filtered=False → 库里确实没东西 → 提示「没有匹配的历史通知」
+    # 仅在 hits 为空时才有信息量；有结果时恒为 False。
+    filtered: bool = False
 
 
 class QAIn(BaseModel):

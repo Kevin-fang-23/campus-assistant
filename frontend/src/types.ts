@@ -136,6 +136,17 @@ export interface SearchOut {
   query: string;
   backend: string;
   hits: SearchHit[];
+  /**
+   * 是否「**因相关性阈值过滤而导致结果为空**」。
+   *
+   * 刻意收窄为只表示"被清空"，而不是"有任意一条被丢弃"：
+   * 候选池本就故意多召回，几乎总有边缘候选被丢，若那种情况也置 true，
+   * 这个标志位就恒为 true、无法用来区分下面两种空态：
+   *   true  → 「未找到相关内容」（有候选，但都判为不相关）
+   *   false → 「没有匹配的历史通知」（库里确实没有）
+   * 阈值关闭（SEARCH_MIN_BIGRAM_OVERLAP=0）时恒为 false。
+   */
+  filtered?: boolean;
 }
 
 /** 问答引用片段：与 AnswerOut.answer 中的 [编号] 一一对应（1-based）。 */
