@@ -12,12 +12,12 @@
 
 | 能力 | 量化结果 | 复现方式 |
 |---|---|---|
-| **BM25 + 向量混合检索** | 混合 MRR@5 **0.983** > 仅 BM25 0.977 > 仅向量 0.949（nDCG@5 0.985） | `python -m eval.run_retrieval_eval --embedding dashscope` |
+| **BM25 + 向量混合检索** | RRF 融合双路召回，权重由 129 条查询扫描标定；混合 MRR@5 **0.972**（本语料上纯 BM25 更高 0.980，原因与局限见基线文档） | `python -m eval.run_retrieval_eval --embedding dashscope --sweep` |
 | **句级片段选择** | 引用片段直接支撑答案；修复"答案句落在 400 字后被硬截断、LLM 只能答未找到" | `pytest tests/test_snippet.py` |
 | **LLM 连接复用** | 20 次问答的 TCP 建连数 **21 → 1**（降约 95%） | `outputs/_verify_connection_reuse.py` |
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
-| **测试与评测** | 后端 **210 passed**；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_eval` |
-| **CI** | 每次推送自动跑后端测试 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
+| **检索与评测** | 后端 **238 passed**；检索质量门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
 
 ---
 
@@ -100,19 +100,22 @@ campus-assistant/
 │   │   ├── db.py                 # 引擎 / Session
 │   │   ├── main.py               # 应用入口 + CORS + 限流 + /health + 静态托管
 │   │   └── seed.py               # 5 条演示数据（4 类 + 1 条近似重复）
-│   ├── tests/                    # 10 个测试模块 / 210 条用例
-│   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 基线）
+│   ├── tests/                    # 12 个测试模块 / 238 条用例
+│   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 阈值标定 + 门禁基线）
 │   ├── requirements.txt          # 全部依赖（含可选 OCR/DB 引擎）
 │   ├── requirements-ci.txt       # CI 依赖（核心 + 生产路径，不含 OCR 栈）
 │   ├── Dockerfile
 │   └── .env.example
 ├── frontend/                     # React + Vite + TS
+│   ├── vitest.config.ts          # 测试配置（happy-dom + setup）
 │   └── src/
 │       ├── api.ts                # 类型化 API 客户端
 │       ├── types.ts              # 与后端 schema 对齐的 TS 类型
 │       ├── common.tsx            # 标签 / 颜色 / 格式化
 │       ├── App.tsx               # 侧边栏 + 视图切换
-│       └── components/           # Dashboard / Upload / Notices / Tasks / Search
+│       ├── test/setup.ts         # 测试前置（jest-dom 断言 + cleanup）
+│       ├── *.test.ts             # 纯逻辑测试（common / api）
+│       └── components/           # Dashboard / Upload / Notices / Tasks / Search（含 Search.test.tsx）
 ├── .github/workflows/ci.yml       # CI：后端测试 + 前端类型检查与构建
 ├── .env.example                   # 环境变量模板（配置从项目根 .env 读取）
 ├── docker-compose.yml            # 可选：PostgreSQL(pgvector) + 后端
@@ -215,15 +218,21 @@ npm run preview      # 本地预览构建产物
 python -m eval.run_retrieval_eval --embedding dashscope --sweep
 ```
 
-默认 `HYBRID_WEIGHT_VECTOR=0.2` / `HYBRID_WEIGHT_BM25=0.8`，由 29 条查询实测确定（详见 `backend/eval/RETRIEVAL_BASELINE.md`）：
+默认 `HYBRID_WEIGHT_VECTOR=0.1` / `HYBRID_WEIGHT_BM25=0.9`，由 **55 条语料 / 129 条查询**实测确定（详见 `backend/eval/RETRIEVAL_BASELINE.md`）：
 
 | 配置 | Recall@1 | MRR@5 | nDCG@5 |
 |---|---|---|---|
-| 仅向量 | 0.931 | 0.949 | 0.962 |
-| 仅 BM25 | 0.966 | 0.977 | 0.978 |
-| **混合 0.2:0.8** | **0.966** | **0.983** | **0.985** |
+| 仅向量 | 0.915 | 0.933 | 0.937 |
+| 仅 BM25 | **0.969** | **0.980** | **0.982** |
+| 混合 0.1:0.9 | 0.961 | 0.972 | 0.976 |
 
-⚠️ 语料仅 16 条，权重曲线在小样本上呈 W 形（极差 3.4%）。**换语料后请重跑 `--sweep` 重新定标**，不要沿用当前值。
+**这个结果需要如实说明**：在本语料上纯 BM25 表现最好，且权重曲线从 0.00 到 0.25 **单调下降**——向量路没有成为任何一条查询的唯一赢家（互补性分析：仅 BM25 独有赢下 5 条，仅向量 0 条）。
+
+原因是语料只有 55 条、中文校园查询词面密集（课程名/房间号/电话/缩写都是字面命中），此规模下 BM25 的字面区分度足够高。仍保留 0.1 而非取实测最优的 0.0，是为了在语料扩大、或遇到与原文零字面重叠的改写查询时留有语义兜底，代价 0.8 个百分点。
+
+> 若确定只服务小语料、追求实测最高分：把 `HYBRID_WEIGHT_VECTOR` 设为 `0`，即退化为纯 BM25。
+
+⚠️ 语料规模变化后**务必重跑 `--sweep` 重新定标**，不要沿用当前值。
 
 ### 句级片段选择
 
@@ -276,11 +285,26 @@ LLM 与 Embedding 共用进程级客户端（`providers/llm_client.py`），prov
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `HYBRID_ENABLED` | `true` | 关掉即回退纯向量检索 |
-| `HYBRID_WEIGHT_VECTOR` | `0.2` | 向量路权重（见上文定标依据） |
-| `HYBRID_WEIGHT_BM25` | `0.8` | BM25 路权重 |
+| `HYBRID_WEIGHT_VECTOR` | `0.1` | 向量路权重（见上文定标依据与实测结论） |
+| `HYBRID_WEIGHT_BM25` | `0.9` | BM25 路权重 |
 | `HYBRID_RRF_K` | `60` | RRF 平滑常数，取自原论文 |
 | `HYBRID_FETCH_K` | `20` | 每路候选池大小（须 > `top_k`，否则失去融合意义） |
 | `BM25_K1` / `BM25_B` | `1.5` / `0.75` | BM25 词频饱和与长度归一化参数 |
+
+### 相关性阈值（是否提示「未找到相关内容」）
+
+检索平时恒返回 top-k，因此问"今天天气怎么样"也会给出 3 条通知，像是胡答。
+阈值判定要求候选文档与查询**共享的「二字及以上词」个数** ≥ `SEARCH_MIN_BIGRAM_OVERLAP`；
+全部被丢弃时接口返回空列表并置 `filtered=true`，前端据此展示「未找到相关内容」。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `SEARCH_MIN_BIGRAM_OVERLAP` | `1` | 共享二字词个数下限；`0` = 关闭判定，退回旧行为 |
+| `SEARCH_KEEP_IF_FILTERED` | `false` | `true` = 只标记不丢弃（灰度观察，便于看阈值会拦掉什么） |
+
+**为什么不用分数做阈值**：三种候选判据（BM25 绝对分 / 余弦 / 句级选片分）实测**区间全部重叠**，
+无法分离「无关」与「相关」—— 根因是中文里单字重合必然发生（"今天天气"撞"明天"里的"天"）。
+判据与阈值取值的完整实测数据见 `eval/RETRIEVAL_BASELINE.md` 第五节。
 
 ### 请求限流
 
@@ -329,7 +353,7 @@ LLM 与 Embedding 共用进程级客户端（`providers/llm_client.py`），prov
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/search` | 混合检索；返回 `snippet`（句级片段）、`match`（命中来源 both/vector/bm25）与两路分数 |
+| POST | `/api/search` | 混合检索；返回 `snippet`（句级片段）、`match`（命中来源 both/vector/bm25）、两路分数，以及 `filtered`（结果是否因相关性阈值被清空） |
 | POST | `/api/qa` | RAG 问答；返回答案（含 `[n]` 引用标记）、`citations`、`degraded` |
 
 ### 元信息
@@ -352,7 +376,7 @@ cd campus-assistant/backend
 pytest -q
 ```
 
-当前 **210 passed**（10 个测试模块 + `conftest.py`）。
+当前 **238 passed**（12 个测试模块 + `conftest.py`）。
 
 > **测试完全不需要 API Key，也不访问外网**：`conftest.py` 已把 VLM / QA 固定为 mock、
 > OCR 固定为 stub，embedding 在无 Key 时自动回退本地哈希。因此可直接在 CI 中运行。
@@ -365,12 +389,30 @@ pytest -q
 | `test_pipeline.py` | 流水线（分类 / 抽取 / 校验 / 去重 / 待办） |
 | `test_api.py` | 全链路 API（导入 / 去重 / 流转 / 复核 / 检索 / 校验错误） |
 | `test_snippet.py` | 句级选片：中文分句边界、打分、`/api/qa` 与 `/api/search` 端到端 |
-| `test_hybrid.py` | BM25 索引与融合：tokenization、RRF 边界、权重归一化、正文精确串召回 |
+| `test_hybrid.py` | BM25 索引与融合：tokenization、RRF 边界、权重归一化、正文精确串召回、相关性阈值（含"单字重合不算相关"） |
 | `test_llm_client.py` | LLM 客户端：重试退避、错误分级、响应格式校验 |
 | `test_llm_client_reuse.py` | 连接复用（统计真实 TCP 连接数）、provider 引用自愈、**无 Key 时不阻断启动** |
 | `test_rate_limit.py` | 三层限流的边界与并发行为 |
 | `test_qa_degradation.py` | 问答降级路径 |
 | `test_embedding_backend_truth.py` | 配置后端 vs 实际生效后端的一致性 |
+| `test_retrieval_set.py` | 检索评测集完整性（规模下限、id 唯一、expected 引用可解析、两路文本分离） |
+| `test_eval_gate.py` | 检索质量门禁：劣化必须被拦、改进不得失败、容差边界、基线文件形态 |
+
+### 前端
+
+```bash
+cd campus-assistant/frontend
+npm run test        # vitest（happy-dom 环境）
+npm run typecheck   # tsc --noEmit
+```
+
+当前 **28 passed**（3 个测试文件）：
+
+| 测试文件 | 关注点 |
+|---|---|
+| `src/common.test.ts` | 时间格式化 / 逾期判定 / 分类状态标签兜底 / 置信度分档 |
+| `src/api.test.ts` | 请求构造、`detail` 错误透传、非 JSON 响应兜底、204 无响应体 |
+| `src/components/Search.test.tsx` | snippet 优先与摘要去重、`[1]` 引用高亮、命中来源徽章、降级提示、错误态、模式切换清空结果、两种空态文案（阈值过滤 vs 库内无） |
 
 ### 离线评测
 
@@ -378,18 +420,21 @@ pytest -q
 # 抽取质量（40 条案例：分类准确率 + 6 字段 P/R/F1）
 python -m eval.run_eval
 
-# 检索质量（16 条语料 / 29 条查询：Recall@k / MRR@5 / nDCG@5，--sweep 做权重扫描）
+# 检索质量（55 条语料 / 129 条查询：Recall@k / MRR@5 / nDCG@5）
 python -m eval.run_retrieval_eval --embedding dashscope --sweep
+
+# 相关性阈值标定：用标注数据夹出可行区间，而不是拍一个数
+python -m eval.run_retrieval_eval --embedding local_hash --calibrate
+
+# 质量门禁：指标低于基线即非零退出（CI 用的就是这条）
+python -m eval.run_retrieval_eval --embedding local_hash --gate
+
+# 确认指标变化可接受后，重新记录基线
+python -m eval.run_retrieval_eval --embedding local_hash --update-baseline
 ```
 
-基线快照与结论见 `backend/eval/` 下的 `BASELINE_*.md` 与 `RETRIEVAL_BASELINE.md`。
-
-### 前端类型检查
-
-```bash
-cd campus-assistant/frontend
-npx tsc --noEmit
-```
+基线快照与结论见 `backend/eval/` 下的 `BASELINE_*.md`、`RETRIEVAL_BASELINE.md`，
+供机器比对的门禁基线是 `backend/eval/baseline.json`（需随代码一起提交）。
 
 ### 持续集成（CI）
 
@@ -397,16 +442,22 @@ npx tsc --noEmit
 
 | Job | 内容 |
 |---|---|
-| `backend` | Python 3.13 + `requirements-ci.txt` → `pytest -q` |
-| `frontend` | Node 20 + `npm ci` → `npx tsc --noEmit` → `npm run build` |
+| `backend` | Python 3.13 + `requirements-ci.txt` → `pytest -q` → **检索质量门禁** `python -m eval.run_retrieval_eval --gate` |
+| `frontend` | Node 22 + `npm ci` → `npx tsc --noEmit` → `npm run test` → `npm run build` |
 
 设计取舍：
 
 - **不注入任何密钥**。测试本就应能在无密钥、无外网的环境下跑通（`conftest.py` 已固定 mock/stub provider）。
   若为了让 CI 通过而注入密钥，等于承认测试依赖外部服务，是工程上的退步。
+- **检索质量门禁为何必要**：单测覆盖的是结构与边界（分词是否可逆、融合是否归一化），
+  而"检索变差了"是**静默**的 —— 改了分词或权重后 MRR 从 0.96 掉到 0.80，
+  所有单测照样全绿，直到用户抱怨"搜不到了"才被发现。
+  门禁把指标与 `eval/baseline.json` 比对，低于「基线 − 0.005」即失败。
 - **`requirements-ci.txt` 只排除 OCR 引擎栈**（paddleocr / paddlepaddle / rapidocr）。
   它们在 Linux 上体积大、下载慢，而 `conftest.py` 已把 OCR 固定为 stub，测试不会触达。
   反之 **faiss / langgraph 保留**：它们是生产配置下真正生效的路径，只测兜底路径会漏缺陷。
+- **前端 Node 取 22**：vite 8 要求 `^20.19 || >=22.12`，vitest 4 支持 20/22/24，
+  取 22 可同时满足且不贴下限跑。
 - 未 pin 版本（沿用 `requirements.txt` 的 `>=` 风格）。上游发布不兼容大版本时 CI 可能转红，
   届时再按需收紧约束。
 
@@ -436,7 +487,14 @@ docker compose up --build
 
 - 当前为**单机单用户、无鉴权**的 MVP；公网演示依赖限流作为唯一护栏，不建议存放敏感数据。
 - **限流为单进程内存实现**，多 worker / 多实例下计数不共享。
-- 检索评测语料仅 **16 条**，权重结论属小样本；语料扩大后需重跑 `--sweep` 重新定标。
+- 检索评测语料 **55 条 / 129 条查询**，实测结论是**本语料上纯 BM25 最强、向量路未带来增益**；
+  语料扩大后 BM25 的字面碰撞会增多、向量路相对价值上升，届时应重跑 `--sweep` 重新定标。
+- **相关性阈值只在 2 条噪声查询上验证过，样本极小**：阈值判据是「共享二字词个数 ≥ 1」，
+  「真实查询误杀 0/129」这个数字可靠，但「能拦掉多少真实噪声」远未被充分验证 ——
+  已知「量子纠缠退相干周期」会漏放（它与 #52 真的共享二字词「周期」）。
+  要评估需先扩一批真实无答案查询进评测集。详见 `eval/RETRIEVAL_BASELINE.md` 第五节。
+- **检索质量门禁的容差是 0.005**，基线用确定性的 `local_hash` 向量记录。
+  换 embedding 后端或调权重后指标必然变化，那不算劣化，需人工确认后 `--update-baseline`。
 - Mock VLM 为规则实现，对排版规整的正式通知效果最好；复杂海报建议接入真实视觉大模型。
 - 生产 PostgreSQL 尚未内置 Alembic 迁移，目前用 `create_all`；规模化前建议补迁移。
-- 前端暂无自动化测试，渲染改动依赖人工验证 + 端到端截图。
+- 前端自动化测试覆盖 **3 个文件 / 31 条用例**，聚焦纯逻辑与关键组件；整页渲染改动仍依赖人工验证 + 端到端截图。
