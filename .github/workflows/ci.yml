@@ -38,8 +38,20 @@ jobs:
       - name: 运行测试
         run: pytest -q --no-header
 
+      # 检索质量门禁：把指标与 eval/baseline.json 比对，低于「基线 - 容差」即失败。
+      #
+      # 为什么单测不够：单测覆盖的是结构与边界（分词是否可逆、融合是否归一化），
+      # 而"检索变差了"是**静默**的 —— 改了分词/权重后 MRR 从 0.96 掉到 0.80，
+      # 所有单测照样全绿，直到用户抱怨"搜不到了"才被发现。
+      #
+      # 用 local_hash 而非 dashscope：前者确定性、离线、毫秒级，适合当基准；
+      # 后者受服务端状态影响会波动，卡门禁只会带来假红。
+      # CI 无 Key，embedding_provider=auto 自然落到 local_hash，与此一致。
+      - name: 检索质量门禁
+        run: python -m eval.run_retrieval_eval --embedding local_hash --gate
+
   frontend:
-    name: 前端类型检查与构建
+    name: 前端测试、类型检查与构建
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -50,17 +62,20 @@ jobs:
       - name: 安装 Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Node 22 LTS：vite 8 要求 ^20.19 || >=22.12，vitest 4 支持 20/22/24，
+          # 取 22 可同时满足两者，避免贴着下限跑。
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: 安装依赖
         run: npm ci
 
-      # 单独跑一次 tsc：npm run build 里也有 tsc，但混在构建输出里
-      # 不容易看出是类型错误还是打包错误，这里让失败原因更直白。
       - name: 类型检查
         run: npx tsc --noEmit
+
+      - name: 运行测试
+        run: npm run test
 
       - name: 构建
         run: npm run build

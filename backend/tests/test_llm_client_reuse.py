@@ -130,6 +130,10 @@ def wired(mock_llm, monkeypatch):
     monkeypatch.setattr(settings, "dashscope_api_key", "test-key")
     monkeypatch.setattr(settings, "aliyun_api_key", "test-key")
     monkeypatch.setattr(settings, "vlm_max_retries", 0)
+    # conftest 把 EMBEDDING_PROVIDER 固定为 local_hash（让绝大多数用例
+    # 不依赖真实上游、结果可复现）。本组用例要验证的恰恰是 dashscope 这条路径
+    # （共享客户端被关停后 provider 不得持有失效引用），因此需显式改回 dashscope。
+    monkeypatch.setattr(settings, "embedding_provider", "dashscope")
     get_embedding.cache_clear()  # 让 embedding 单例按新 base_url 重建
 
     # store 里换成指向 mock 服务器的 DashScopeEmbedding

@@ -1,0 +1,17 @@
+{
+  "_comment": "检索质量基线，供 CI 门禁比对。指标低于本文件记录值（容差见 run_retrieval_eval.GATE_TOLERANCE）即 fail。更新方式：python -m eval.run_retrieval_eval --update-baseline --embedding local_hash（权重/embedding 变更时需重新标定）。",
+  "embedding": "local_hash",
+  "weights": {
+    "w_vector": 0.1,
+    "w_bm25": 0.9
+  },
+  "corpus_size": 55,
+  "case_count": 129,
+  "metrics": {
+    "recall@1": 0.937984496124031,
+    "recall@3": 0.9844961240310077,
+    "recall@5": 1.0,
+    "mrr@5": 0.958656330749354,
+    "ndcg@5": 0.9664811766003025
+  }
+}

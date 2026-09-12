@@ -17,6 +17,28 @@ os.environ["QA_PROVIDER"] = "mock"
 # test_rate_limit.py 会自行开启并设定小阈值来验证限流本身。
 os.environ["RATE_LIMIT_ENABLED"] = "false"
 
+# Embedding 固定为本地哈希 —— **测试必须与真实上游解耦**。
+#
+# 不固定会出两类问题，且都已在本地（配置了真实 Key 的 .env）实测复现：
+#
+# 1) **不确定性**：dashscope 是远端服务，向量结果随版本/服务端状态变化。
+#    而检索类断言（阈值判定、top-k 内容、nDCG）都建立在"向量可复现"之上，
+#    挂真实上游等于把测试结果交给第三方抖动。
+# 2) **进程级粘性降级污染后续用例**：DashScopeEmbedding 一旦因上游故障降级到
+#    local_hash 就粘滞（dim 1024 → 256），而 get_embedding() 是 lru_cache 单例。
+#    test_embedding_backend_truth.py 会**故意**触发一次降级来验证该设计，
+#    于是之后所有 load_from_db 都用「期望 256 维」筛「实际 1024 维」的历史向量，
+#    **全部被跳过**、向量索引坍缩到接近空（实测 store=1 而库内 5 条通知），
+#    表现为 test_hybrid 的孤儿断言"单文件绿、全量红"。
+#
+# 固定为 local_hash 后：维度恒定 256、纯本地计算（无网络、毫秒级）、
+# 结果完全可复现。这也正是 **CI 的实际运行条件**（CI 无 Key，
+# embedding_provider=auto 自然落到 local_hash），因此本地与 CI 行为一致。
+#
+# 需要验证 dashscope 相关行为的用例（test_embedding_backend_truth.py）
+# 自行构造 DashScopeEmbedding 实例，不依赖这里的全局单例。
+os.environ["EMBEDDING_PROVIDER"] = "local_hash"
+
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -75,3 +97,26 @@ def _seed_corpus(_prepare_db):
 def db():
     with SessionLocal() as session:
         yield session
+
+
+def reload_indexes_from_db() -> None:
+    """按库内现状重建**两路**索引 —— 用例写完临时数据后的统一收尾手段。
+
+    为什么必须这样收尾：`index_notice()` 会同时写向量索引与 BM25 索引，
+    而两路都**没有单条删除接口**（VectorStore 只能 `load_from_db` 全量重建，
+    BM25 只能 `load_documents` 全量重建；`reset_indexes()` 更是只把 BM25
+    单例置 None）。因此用例删除临时通知后，索引里必然残留指向已删通知的条目。
+
+    残留的后果不是"多召回一条"这么轻 —— 它会让**相关性阈值判定**失去依据：
+    阈值要看"查询与文档共享的二字词个数"，而孤儿文档已从库里删掉、取不到文本，
+    `is_relevant` 按约定对取不到文本的情况**放开**（宁可多给一条也不误杀），
+    于是幽灵条目反而绕过了阈值。表现为"单跑绿、全量跑红"的顺序依赖缺陷。
+
+    统一在收尾处调用本函数，让索引与库保持一致。
+    """
+    from app.services.hybrid import rebuild_bm25
+    from app.services.vector_store import get_store
+
+    with SessionLocal() as db:
+        get_store().load_from_db(db)
+        rebuild_bm25(db)
