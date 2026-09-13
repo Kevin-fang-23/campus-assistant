@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import pytest
@@ -18,6 +19,7 @@ from app.config import settings
 from app.main import app
 from app.services import rate_limit as rl
 from app.services.rate_limit import RateLimiter, client_key, reset_limiter, tier_for
+from app.services.rate_limit_store import InMemoryCountStore
 
 
 class FakeClock:
@@ -148,6 +150,63 @@ def test_per_ip_daily_cap_is_per_ip(monkeypatch) -> None:
         assert limiter.check("/api/qa", "1.1.1.1").allowed
     assert limiter.check("/api/qa", "1.1.1.1").allowed is False
     assert limiter.check("/api/qa", "2.2.2.2").allowed is True
+
+
+def test_release_failure_is_logged_not_raised(monkeypatch, caplog) -> None:
+    """`_release` 的异常分支必须**只告警不抛**，且 logger 必须真实可用。
+
+    回归用例。原实现里该分支调用 `logger.warning`，但 `rate_limit.py`
+    从未定义 `logger`（既没 `import logging` 也没赋值）—— 一旦走进这个
+    except，就会抛 `NameError: name 'logger' is not defined`，
+    把一次本应正常返回的 429 变成 500。
+
+    为什么不能只靠端到端用例覆盖：`DailyCounter.release` 内部已自行
+    try/except 吞掉存储异常，所以在 `check()` 层面几乎无法把异常送到
+    这一行（端到端用例实测**无法**触发，见下方说明）。因此这里做
+    层次化验证 —— 把 `_counter.release` 换成一个必然抛异常的桩，
+    直接驱动 `_release`，确保异常被兜住且有日志产出。
+
+    验证三点：
+    1. 不抛异常（修复前会 NameError）；
+    2. 走的是 `except` 分支（异常被吞）；
+    3. 确实写了一条 warning 日志（用 caplog 断言）。
+    """
+    clock = FakeClock()
+    limiter = RateLimiter(now_fn=clock.now_fn, wall_fn=clock.wall_fn)
+
+    def boom(_key: str, _day: str) -> None:
+        raise RuntimeError("simulated store failure")
+
+    monkeypatch.setattr(limiter._counter, "release", boom)   # noqa: SLF001
+
+    with caplog.at_level(logging.WARNING, logger="app.services.rate_limit"):
+        # 修复前：这里抛 NameError
+        limiter._release("global:qa", "2026-09-11", True)     # noqa: SLF001
+
+    # 用 getMessage() 拿到已格式化文本；不要对 record.message 再套 % 格式化
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("全局额度回退失败" in m for m in messages), (
+        f"回退失败必须留下 warning 日志，实际记录：{messages}"
+    )
+    assert any(r.levelno == logging.WARNING for r in caplog.records), (
+        "应是 WARNING 级别（回退失败不影响正确性方向，无需 ERROR）"
+    )
+
+
+def test_release_skipped_when_global_layer_disabled(monkeypatch) -> None:
+    """`should_release=False` 时不应触碰存储（L3 未启用就没有占位可回退）。"""
+    calls: list[str] = []
+
+    class CountingStore(InMemoryCountStore):
+        def release(self, day: str, key: str) -> None:
+            calls.append(key)
+
+    clock = FakeClock()
+    limiter = RateLimiter(
+        now_fn=clock.now_fn, wall_fn=clock.wall_fn, store=CountingStore()
+    )
+    limiter._release("global:qa", "2026-09-11", False)   # noqa: SLF001
+    assert calls == [], "L3 未启用时不该调用 release"
 
 
 # --------------------------- L3 全局每日（资金护栏）---------------------------

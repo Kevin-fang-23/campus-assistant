@@ -42,6 +42,7 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -50,6 +51,8 @@ from typing import Callable
 
 from ..config import settings
 from .rate_limit_store import CountStore, DailyCounter, InMemoryCountStore
+
+logger = logging.getLogger(__name__)
 
 # 层级名
 TIER_QA = "qa"
