@@ -16,6 +16,7 @@ from ..models import Document, DocKind, DocStatus, Notice, Task, TaskEvent, Task
 from ..parsers import detect_kind, parse_bytes
 from ..schemas import DocumentOut, IngestResult, NoticeOut, TaskOut
 from .hybrid import index_notice
+from .qa_cache import invalidate_qa_cache
 
 logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -153,6 +154,12 @@ def ingest_bytes(
     db.commit()
     db.refresh(notice)
 
+    # 新通知已可被检索 → 作废 /api/qa 的旧答案。
+    # 为什么必须放在 commit 之后：缓存失效若在事务提交前发生，而提交随后失败，
+    # 就会出现「缓存已清空、库里却没这条通知」——查询白跑一次，虽不致错但无意义。
+    # 反过来的顺序（先提交后失效）最坏只是多清几个 key，是安全方向。
+    invalidate_qa_cache(f"新通知入库 notice_id={notice.id}")
+
     warnings.extend(state.get("warnings") or [])
     return IngestResult(
         document=DocumentOut.model_validate(doc),
@@ -199,4 +206,6 @@ def regenerate_tasks(db: Session, notice: Notice, base_time: datetime | None = N
     tasks = create_tasks(db, notice, drafts)
     index_notice(db, notice)
     db.commit()
+    # 通知内容被人工修正 → 旧答案里的标题/时间/地点可能已经不对了
+    invalidate_qa_cache(f"通知人工修正 notice_id={notice.id}")
     return tasks

@@ -533,3 +533,98 @@ def test_reset_keeps_instance() -> None:
     cache_after = get_cache()
     assert cache_after is cache_before, "reset 应保留实例引用"
     assert len(cache_after) == 0
+
+
+# --------------------------------------------------------------------------
+# 12. 知识库变更 → 缓存必须立即失效（回归护栏）
+#
+# 这是实测到过的真实缺陷：缓存里存的是完整 AnswerOut，包含「未找到」这类
+# 否定答案。先问一个库中无答案的问题（缓存了否定答案），随后入库能回答它的
+# 通知，5 分钟内再问依旧返回「知识库中暂时没有…」—— 用户会以为系统坏了。
+# --------------------------------------------------------------------------
+def test_ingest_invalidates_qa_cache(client: TestClient, monkeypatch) -> None:
+    """入库新通知后，同 query 的旧答案必须作废（不再 cache_hit）。
+
+    用 `QA_PROVIDER=mock` 走降级路径即可，本用例验证的是失效时机，
+    与是否调用 LLM 无关。
+    """
+    from app.services.qa_cache import invalidate_qa_cache  # noqa: F401  确认可导入
+
+    monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
+    q = "这里一定没有的通知主题_zzz"
+
+    r1 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
+    assert r1["cache_hit"] is False
+    # 第一次写入缓存 → 第二次必命中
+    r2 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
+    assert r2["cache_hit"] is True, "前置条件：缓存应已生效"
+    assert len(get_cache()) >= 1
+
+    # 入库一条新通知（会触发 invalidate_qa_cache）
+    resp = client.post(
+        "/api/documents/text",
+        json={
+            "content": "关于举办校园创客社团旧手机拆解工作坊的通知\n时间：10月12日 14:00\n"
+                       "地点：图书馆南门集合\n报名截止：10月10日 18:00\n",
+            "filename": "cache_invalidation_guard.txt",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert len(get_cache()) == 0, "入库后缓存必须被清空"
+
+    # 入库后再问：不得命中缓存（必须重新检索，拿到最新结果）
+    r3 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
+    assert r3["cache_hit"] is False, "入库后旧缓存必须已失效"
+
+
+def test_invalidate_all_keeps_stats() -> None:
+    """invalidate_all 只清条目，**保留**命中率统计。
+
+    为什么单独钉住：生产失效若误用 clear()，会把 hits/misses 一起清零，
+    使「命中率」这个观测指标失真 —— 而失效只是正常业务动作。
+    """
+    cache = reconfigure_cache(max_size=8, ttl_seconds=300.0)
+    cache.set("k1", "v1")
+    cache.get("k1")          # hit
+    cache.get("missing")     # miss
+    before = cache.stats()
+    assert before["hits"] == 1 and before["misses"] == 1
+
+    removed = cache.invalidate_all()
+    assert removed == 1
+    after = cache.stats()
+    assert after["size"] == 0, "条目应被清空"
+    assert after["hits"] == 1 and after["misses"] == 1, (
+        f"统计不该被清空，实际 {after}"
+    )
+
+
+def test_notice_update_invalidates_qa_cache(client: TestClient, monkeypatch) -> None:
+    """人工修正通知（regenerate=false 分支）同样要失效缓存。
+
+    这条分支容易漏：regenerate=true 时由 regenerate_tasks 内部失效，
+    而 regenerate=false 走 else 分支单独 commit。
+    """
+    monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
+    # 先入库一条通知并拿到 id
+    resp = client.post(
+        "/api/documents/text",
+        json={
+            "content": "《操作系统》第三次小班课通知\n本周五 15:00 在教三 201 讲解进程调度实验。\n",
+            "filename": "notice_update_guard.txt",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    notice_id = resp.json()["notice"]["id"]
+
+    q = "操作系统小班课"
+    r1 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
+    r2 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
+    assert r2["cache_hit"] is True, "前置条件：缓存应已生效"
+
+    upd = client.patch(
+        f"/api/notices/{notice_id}?regenerate=false",
+        json={"location": "教三 999"},
+    )
+    assert upd.status_code == 200, upd.text
+    assert len(get_cache()) == 0, "修正通知后缓存必须被清空"

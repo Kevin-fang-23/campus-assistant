@@ -159,6 +159,24 @@ class TTLRUCache:
             self._hits = 0
             self._misses = 0
 
+    def invalidate_all(self) -> int:
+        """失效全部条目，**保留**命中率统计。返回清掉的条目数。
+
+        为什么不能用 `clear()` 做生产失效：它会连 `_hits`/`_misses` 一起清零，
+        把「命中率」这个运维指标一起抹掉 —— 而失效是正常业务动作
+        （新通知入库），不该污染观测数据。
+
+        为什么需要失效：缓存的是完整 `AnswerOut`（含 citations 与"未找到"这类
+        否定答案）。新通知入库后，同一 query 的正确答案已经变了，但缓存仍会
+        返回旧答案 —— 实测过的最坏情形是：先问一个库中无答案的问题（缓存了
+        "知识库中暂时没有…"），随后入库能回答它的通知，5 分钟内再问依旧拿到
+        否定答案，用户会以为系统坏了。因此入库/重建索引后必须主动失效。
+        """
+        with self._lock:
+            n = len(self._data)
+            self._data.clear()
+            return n
+
     def stats(self) -> dict[str, Any]:
         """命中率快照。生产可挂到 /health，调试/演示可打印。"""
         with self._lock:
@@ -235,6 +253,28 @@ def reset_cache_for_tests() -> None:
     """
     cache = get_cache()
     cache.clear()
+
+
+def invalidate_qa_cache(reason: str = "") -> int:
+    """**业务失效**：知识库内容变化后调用，让旧答案立即作废。
+
+    调用时机（见 `services/ingest.py` 与 `api/notices.py`）：
+      · 新通知入库（含文件去重首次落库）；
+      · 通知被人工修正（标题/时间/地点改了，答案自然要变）；
+      · 通知被删除。
+
+    为什么用「全量失效」而不是「按 query 精细失效」：
+    缓存的 key 是 `(query, top_k)`，而一次入库影响的是**哪些 query**无法在
+    写入时得知 —— 那需要反向索引「哪个通知被哪些 query 引用」，成本远高于
+    收益。本项目量级下缓存最多 128 条，全量失效的代价是几个 key 的重新计算；
+    而漏失效的代价是用户拿到错误的否定答案。方向性取舍很明确。
+
+    返回被清掉的条目数，便于调用方打日志观察失效频率。
+    """
+    n = get_cache().invalidate_all()
+    if n:
+        logger.info("QA 缓存已失效 %d 条（原因：%s）", n, reason or "知识库变更")
+    return n
 
 
 def cache_key(query: str, top_k: int) -> tuple[str, int]:

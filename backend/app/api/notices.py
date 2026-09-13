@@ -8,6 +8,7 @@ from ..db import get_db
 from ..models import Category, Notice
 from ..schemas import NoticeOut, NoticeUpdateIn, TaskOut
 from ..services.ingest import regenerate_tasks
+from ..services.qa_cache import invalidate_qa_cache
 
 router = APIRouter(prefix="/api/notices", tags=["notices"])
 
@@ -66,6 +67,9 @@ def update_notice(
         regenerate_tasks(db, notice)
     else:
         db.commit()
+        # regenerate_tasks 内部已失效缓存；这条分支要自己来，否则改了通知
+        # 但传 regenerate=false 时，/api/qa 仍会返回修正前的旧答案。
+        invalidate_qa_cache(f"通知修正(未重算待办) notice_id={notice.id}")
     db.refresh(notice)
     return NoticeOut.model_validate(notice)
 
