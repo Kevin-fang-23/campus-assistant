@@ -8,6 +8,14 @@
 - LLM 调用完全复用 providers/llm_client（鉴权/超时/重试/错误分级），
   不另起 httpx 客户端；
 - 失败降级不抛 500，与 extract 节点「VLM 失败 → 规则抽取」同一模式。
+
+## 缓存层（qa_cache）
+
+任何路径都会缓存最终 `AnswerOut`（LLM 成功 / LLM 降级 / 空召回），
+缓存命中时**直接复用**：不再发起 embedding、也不再走 LLM。
+key = (normalize(query), top_k)；TTL 与 max_size 可通过 .env 配置；
+关闭缓存只需 `QA_CACHE_ENABLED=false`。
+详见 services/qa_cache.py 模块 docstring。
 """
 from __future__ import annotations
 
@@ -33,6 +41,7 @@ from ..services.notice_text import (
     notice_context,
     notice_snippet,
 )
+from ..services.qa_cache import cache_key, get_cache
 from ..services.vector_store import get_store
 
 logger = logging.getLogger(__name__)
@@ -66,8 +75,13 @@ def _build_llm_client() -> OpenAICompatClient:
     return build_client_from_settings()
 
 
-@router.post("", response_model=AnswerOut, summary="检索增强问答（RAG）：答案 + 引用片段")
-def ask(payload: QAIn, db: Session = Depends(get_db)) -> AnswerOut:
+def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
+    """构造 AnswerOut 的全部业务逻辑：检索 → 生成/降级。
+
+    拆出内部函数的原因：让 `ask()` 入口的「查缓存 → 走业务 → 写缓存」
+    三步结构清晰可见，业务逻辑本身不再关心缓存细节。
+    单元测试也可以直接喂 QAIn 来验证。
+    """
     store = get_store()
     # 混合检索（向量 + BM25 加权融合）：问答的召回质量直接决定回答质量，
     # 精确串（课程名/房间号/手机号）靠 BM25 兜住，语义相近靠向量兜住。
@@ -153,3 +167,31 @@ def ask(payload: QAIn, db: Session = Depends(get_db)) -> AnswerOut:
         backend=store.backend,
         degraded=True,
     )
+
+
+@router.post("", response_model=AnswerOut, summary="检索增强问答（RAG）：答案 + 引用片段")
+def ask(payload: QAIn, db: Session = Depends(get_db)) -> AnswerOut:
+    """缓存 → 业务 → 回写 三段式。
+
+    **为什么缓存命中要 `model_copy(update={"cache_hit": True})`**：
+    Pydantic 对象是 immutable-friendly，缓存里的值是 cache_hit=False 的副本
+    （写缓存前已显式重置），命中时再复制一份标 True。前端 / 调用方只看
+    cache_hit 字段就能判断本次是否真正调用了 LLM，便于演示时可见化。
+    """
+    # ---- 缓存读：命中直接返回，不再发起 LLM/embedding ----
+    if settings.qa_cache_enabled:
+        key = cache_key(payload.query, payload.top_k)
+        cached = get_cache().get(key)
+        if cached is not None:
+            # 深拷贝：避免外部修改 cache_hit 影响后续命中（缓存里应保持 False）
+            return cached.model_copy(update={"cache_hit": True})
+
+    # ---- 业务：检索 + 生成/降级 ----
+    answer = _build_answer(payload, db)
+
+    # ---- 缓存写：把 cache_hit 重置为 False 再存；下次命中时再标 True ----
+    if settings.qa_cache_enabled:
+        answer_to_cache = answer.model_copy(update={"cache_hit": False})
+        get_cache().set(key, answer_to_cache)
+
+    return answer

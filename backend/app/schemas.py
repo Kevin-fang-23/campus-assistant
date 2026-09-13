@@ -242,13 +242,20 @@ class CitationOut(BaseModel):
 
 class AnswerOut(BaseModel):
     """RAG 问答结果。degraded=True 表示未走 LLM（无 Key / LLM 失败 / 无召回），
-    answer 为抽取式回答；degraded=False 表示 answer 由 LLM 基于 citations 生成。"""
+    answer 为抽取式回答；degraded=False 表示 answer 由 LLM 基于 citations 生成。
+
+    cache_hit=True 时，answer/citations 直接复用缓存（不再重建 snippet/score），
+    上游 LLM/embedding 调用被完全跳过 —— 用于演示现场对同一问题的反复追问。
+    """
 
     query: str
     answer: str
     citations: list[CitationOut]
     backend: str
     degraded: bool
+    # 默认 False 保持向后兼容：旧前端/外部调用方不会因为新字段而 fail。
+    # 新增字段必须是 Optional 且有默认值（Pydantic v2 + ORM 风格）。
+    cache_hit: bool = False
 
 
 class StatsOut(BaseModel):

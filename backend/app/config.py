@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     qa_provider: str = "auto"
     qa_model: str = "qwen-plus"              # 纯文本问答模型，无需视觉能力，比 VL 模型便宜
 
+    # ---- /api/qa 响应缓存 ----
+    # 演示现场同一问题被多人重复问时，重复走 LLM+embedding 会快速烧额度；
+    # 加一层 TTL LRU，命中时直接复用上次响应，不再发起上游调用。
+    #   · qa_cache_enabled=False：完全回滚到无缓存（与改造前一致）
+    #   · ttl_seconds：缓存有效期；太长则新通知入库后旧答案存活过久，
+    #     太短则命中率太低。默认 5 分钟 ≈ 一场演示连续追问的常见窗口。
+    #   · max_size：内存条目上限；满了 LRU 淘汰最久未用的。
+    #     128 条 × 5KB ≈ 640KB，进程内存可忽略。
+    qa_cache_enabled: bool = True
+    qa_cache_ttl_seconds: int = 300
+    qa_cache_max_size: int = 128
+
     # ---- 请求限流（保护上游 LLM 额度与单进程资源）----
     # 三层：每 IP 每分钟（突发控制）→ 每 IP 每日（单源公平）→ 全局每日（总额度护栏）
     # 0 表示该层不启用。改这些值即可整体放宽/收紧，无需改代码。

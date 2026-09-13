@@ -16,6 +16,9 @@ os.environ["QA_PROVIDER"] = "mock"
 # 限流默认关闭：既有用例共用同一个 TestClient，反复请求会互相干扰阈值判定。
 # test_rate_limit.py 会自行开启并设定小阈值来验证限流本身。
 os.environ["RATE_LIMIT_ENABLED"] = "false"
+# /api/qa 缓存默认关闭：既有的降级/限流测试假定"每次都走完整流程"，
+# 与新加缓存层不耦合。test_qa_cache.py 自行开启并验证缓存本身。
+os.environ["QA_CACHE_ENABLED"] = "false"
 
 # Embedding 固定为本地哈希 —— **测试必须与真实上游解耦**。
 #
@@ -44,6 +47,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.db import SessionLocal, init_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.qa_cache import reset_cache_for_tests  # noqa: E402
 from app.services.vector_store import get_store  # noqa: E402
 
 # 检索类用例（/api/search、/api/qa）必须有语料才能召回。
@@ -91,6 +95,22 @@ def _seed_corpus(_prepare_db):
         for content, filename in _SEED_NOTICES:
             c.post("/api/documents/text", json={"content": content, "filename": filename})
     yield
+
+
+@pytest.fixture(autouse=True)
+def _qa_cache_clean():
+    """每个用例前后清空 /api/qa 的缓存单例。
+
+    缓存是**进程级单例**（与 `RateLimiter` / `VectorStore` 同处），
+    而 TestClient 是 module 级 fixture 跨用例共享 —— 不显式清空的话，
+    同一 query 的前序用例写入的响应会让后续用例命中缓存、跳过 LLM/embedding
+    调用，破坏"每个用例独立验证某条路径"的契约。
+
+    autouse=True 让所有测试自动应用，不需每个文件显式声明。
+    """
+    reset_cache_for_tests()
+    yield
+    reset_cache_for_tests()
 
 
 @pytest.fixture

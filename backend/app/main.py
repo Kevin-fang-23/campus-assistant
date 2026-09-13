@@ -44,7 +44,7 @@ from .api import documents, notices, qa, search, tasks
 from .config import settings
 from .db import SessionLocal, engine, init_db
 from .graph.pipeline import engine_name
-from .middleware import RateLimitMiddleware
+from .middleware import QaCacheMiddleware, RateLimitMiddleware
 from .providers.ocr import get_ocr
 from .providers.llm_client import LLMError, close_shared_client, get_shared_client
 from .providers.vlm import get_vlm
@@ -145,10 +145,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 限流必须先于 CORS 注册：Starlette「后添加者在外层」，这样 CORS 处于外层、
-# 限流处于内层，429 响应才会带上跨域头（否则前端只看到 CORS 报错而非可读的 429）。
+# 中间件栈（后加在外层；洋葱模型）：
+#   CORSMiddleware → QaCacheMiddleware → RateLimitMiddleware → endpoint
+#
+# 关键顺序：
+#  · CORS 最外层：处理跨域响应头；否则 429 等错误响应拿不到 CORS 头；
+#  · QaCache 在 CORS 内、限流外：拦截 POST /api/qa 缓存命中，**绕过限流**；
+#  · RateLimit 在 QaCache 内：缓存未命中才会计费。
 app.add_middleware(RateLimitMiddleware)
-
+app.add_middleware(QaCacheMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
