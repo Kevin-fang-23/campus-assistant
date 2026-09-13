@@ -22,15 +22,23 @@ const MATCH_LABELS: Record<string, { text: string; color: string }> = {
 
 /** 把回答里的 [1] [2] 引用标记渲染成高亮标签，便于与下方引用列表对照。 */
 function renderAnswer(text: string) {
-  return text.split(/(\[\d+\])/g).map((part, i) =>
-    /^\[\d+\]$/.test(part) ? (
-      <span key={i} className="cite-mark">
-        {part}
-      </span>
-    ) : (
-      <span key={i}>{part}</span>
-    )
-  );
+  // 同时切出两种标记：
+  //   [n]      引用标号 → 高亮标签，与下方引用列表对照
+  //   **加粗**  模型默认输出 Markdown，不处理会把 ** 原样显示出来
+  return text.split(/(\[\d+\]|\*\*[^*\n]+\*\*)/g).map((part, i) => {
+    if (/^\[\d+\]$/.test(part)) {
+      return (
+        <span key={i} className="cite-mark">
+          {part}
+        </span>
+      );
+    }
+    const bold = /^\*\*([^*\n]+)\*\*$/.exec(part);
+    if (bold) {
+      return <strong key={i}>{bold[1]}</strong>;
+    }
+    return <span key={i}>{part}</span>;
+  });
 }
 
 export default function Search() {

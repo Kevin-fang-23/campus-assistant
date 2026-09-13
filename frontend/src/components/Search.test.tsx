@@ -220,4 +220,35 @@ describe("Search 组件的问答模式", () => {
     expect(container.querySelector(".banner")).not.toBeNull();
     expect(screen.queryByText("AI 生成")).not.toBeInTheDocument();
   });
+
+  it("把回答里的 **加粗** 渲染成 strong，而不是原样显示星号", async () => {
+    // 模型默认输出 Markdown。若不处理，界面上会出现字面的 **9月10日 23:00**，
+    // 演示/截图时非常显眼，因此这里钉住该行为。
+    const out: QAOut = {
+      query: "数据结构作业什么时候截止",
+      answer: "截止时间为 **9月10日 23:00** [1]，请勿逾期。",
+      backend: "faiss+dashscope",
+      degraded: false,
+      citations: [
+        {
+          notice_id: 2,
+          title: "《数据结构》第三次实验报告作业要求",
+          snippet: "截止时间：9月10日 23:00，逾期不计分。",
+          score: 1.0,
+        },
+      ],
+    };
+    mockedAskQA.mockResolvedValueOnce(out);
+
+    const user = userEvent.setup();
+    const { container } = render(<Search />);
+    await user.click(screen.getByRole("button", { name: /智能问答/ }));
+    await user.type(screen.getByRole("textbox"), "数据结构作业什么时候截止");
+    await user.click(screen.getByRole("button", { name: "提问" }));
+
+    const bold = await screen.findByText("9月10日 23:00");
+    expect(bold.tagName).toBe("STRONG");
+    // 星号不得残留在答案里
+    expect(container.querySelector(".answer")?.textContent).not.toContain("**");
+  });
 });
