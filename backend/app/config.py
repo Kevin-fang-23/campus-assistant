@@ -83,6 +83,17 @@ class Settings(BaseSettings):
     # 其余 /api/* 只读接口：不花钱，仅防高频锤击
     rate_limit_default_per_min: int = 120
 
+    # 日计数是否持久化（解决清单 #8 多 worker 各算一份 / #9 重启清零）。
+    # sqlite: 写入当前数据库的 rate_limit_counters 表（零新依赖，默认）；
+    # none:   只留进程内内存（等价改造前行为，便于回滚；**不跨进程/重启**）。
+    # 多实例（多台机器）部署时 SQLite 文件无法共享，需换 Redis —— 见
+    # app/services/rate_limit_store.py 的 CountStore 协议。
+    rate_limit_store: str = "sqlite"
+    # ⚠️ 已废弃，保留仅为兼容旧 .env（改了不影响任何行为）。
+    # 日计数现在是「判定即读库、记账即写库」，不存在批量刷盘，
+    # 因此没有「刷盘间隔」这个可调项，也就没有「重启丢一个间隔」的窗口。
+    rate_limit_flush_interval: float = 1.0
+
     # ---- OCR ----
     # auto: paddleocr -> rapidocr -> vlm -> stub 依次探测
     ocr_provider: str = "auto"

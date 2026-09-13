@@ -42,7 +42,7 @@ except ModuleNotFoundError:  # pragma: no cover - only for static analysis / min
 
 from .api import documents, notices, qa, search, tasks
 from .config import settings
-from .db import SessionLocal, init_db
+from .db import SessionLocal, engine, init_db
 from .graph.pipeline import engine_name
 from .middleware import RateLimitMiddleware
 from .providers.ocr import get_ocr
@@ -50,6 +50,8 @@ from .providers.llm_client import LLMError, close_shared_client, get_shared_clie
 from .providers.vlm import get_vlm
 from .services.bm25 import get_bm25_index
 from .services.hybrid import rebuild_bm25
+from .services.rate_limit import get_limiter
+from .services.rate_limit_store import InMemoryCountStore, SqliteCountStore
 from .services.vector_store import get_store
 
 logging.basicConfig(
@@ -59,9 +61,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _attach_rate_limit_store() -> None:
+    """把限流的日计数挂到持久化后端（解决多 worker 各算一份、重启清零）。
+
+    为什么放在启动钩子而不是模块顶层：全局单例 `_limiter` 在导入时就创建了，
+    那时数据库引擎可能还没配置好。启动时挂载更安全，也便于测试替换。
+
+    为什么失败只告警：限流是护栏而非核心功能，存储不可用时应退化为
+    「内存计数」（等同改造前行为），而不是让整个应用起不来。
+    """
+    mode = (settings.rate_limit_store or "none").strip().lower()
+    limiter = get_limiter()
+    if mode == "sqlite":
+        try:
+            limiter.attach_store(SqliteCountStore(engine))
+            logger.info(
+                "限流日计数已持久化到 SQLite（表 rate_limit_counters）"
+                "：多 worker 额度总量精确、重启不清零"
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("限流持久化初始化失败，退回进程内内存计数：%s", exc)
+    elif mode != "none":
+        logger.warning("未知的 RATE_LIMIT_STORE=%s，退回进程内内存计数", mode)
+    limiter.attach_store(InMemoryCountStore())
+    logger.warning(
+        "限流日计数仅在进程内（RATE_LIMIT_STORE=%s）—— 多 worker 会各自计数、"
+        "重启会清零，仅建议本地开发使用",
+        mode,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: Any):
     init_db()
+    _attach_rate_limit_store()
     # 预热共享 LLM 客户端：把首次 DNS+TCP+TLS 握手的代价挪到启动阶段，
     # 而不是让第一个真实用户的请求承担（演示现场尤其在意首问延迟）。
     #
@@ -96,7 +130,10 @@ async def lifespan(app: Any):
         "（已降级）" if get_store().embedder.degraded else "",
     )
     yield
-    # 关停：释放共享连接池，避免 uvicorn --reload 反复重启时残留连接
+    # 关停：释放限流计数器（当前实现无后台线程，等价空操作，保留以兼容
+    # 未来的批量刷盘实现），并释放共享连接池，避免 uvicorn --reload
+    # 反复重启时残留连接
+    get_limiter().close()
     close_shared_client()
     logger.info("共享 LLM 客户端已关闭")
 

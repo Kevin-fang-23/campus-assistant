@@ -6,6 +6,11 @@ venv/
 env/
 *.db
 backend/campus.db
+# SQLite WAL 模式的副产物（开启 WAL 后自动生成）。
+# 限流的日计数表会长期持有数据库连接，WAL 文件始终存在；
+# 它们与 .db 一样是本地运行时状态，不入库。
+*.db-shm
+*.db-wal
 backend/storage/
 .env
 .env.*
