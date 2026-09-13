@@ -6,6 +6,42 @@
 
 > **开箱即用：无需任何 API Key。** 默认用内置规则（Mock VLM + 本地哈希向量 + Stub OCR）即可跑通完整链路；接入阿里云百炼 `qwen3-vl-plus` 后抽取与向量质量进一步提升。
 
+![概览](./docs/images/01-dashboard.png)
+
+---
+
+## 🖼️ 界面预览
+
+以下均为**真实运行**截图（非设计稿）：后端 `uvicorn` + 前端 `vite`，数据库含 12 条通知 / 14 条待办，
+VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
+
+| 导入 → 抽取（关键流程） | 通知复核 |
+|---|---|
+| ![导入抽取](./docs/images/07-ingest-flow.png) | ![通知复核](./docs/images/03-notices.png) |
+| 粘贴通知原文 → 自动抽取**发布方 / 地点 / 截止 / 时间 / 置信度**并生成待办 | AI 抽取结果可人工修正，保存后自动按新信息重算待办 |
+
+| 混合检索（句级片段） | RAG 问答（引用溯源） |
+|---|---|
+| ![混合检索](./docs/images/05-search-hybrid.png) | ![RAG 问答](./docs/images/06-qa-rag.png) |
+| 每条命中标注**来源**（语义/关键词/混合）与**句级片段**，片段即"为什么召回这条" | 答案内 `[1] [2]` 标注来源，下方引用片段可逐条溯源 |
+
+| 待办看板 | 导入（上传文件） |
+|---|---|
+| ![待办看板](./docs/images/04-tasks.png) | ![导入](./docs/images/02-upload.png) |
+| 四态流转（待办/进行中/已完成/已归档），逾期自动标红 | 支持图片（海报/截图）、PDF、纯文本 |
+
+---
+
+## 🏗️ 系统架构
+
+![系统架构](./docs/images/architecture.png)
+
+> 完整分层说明、数据流向、**降级矩阵**与设计取舍见 **[`docs/architecture.md`](./docs/architecture.md)**。
+
+一句话概括分层：**前端 5 视图 → FastAPI 接入（限流护栏）→ LangGraph 编排（写入）/ 混合检索（读取）
+→ Providers 能力层（每项可降级）→ SQLAlchemy 存储**。
+关键取舍：把外部能力收敛到 `providers/` 一层，因此**无 API Key 时全链路仍可跑通**（自动降级）。
+
 ---
 
 ## 🎯 核心亮点
@@ -103,7 +139,7 @@ campus-assistant/
 │   │   ├── db.py                 # 引擎 / Session
 │   │   ├── main.py               # 应用入口 + CORS + 限流 + /health + 静态托管
 │   │   └── seed.py               # 5 条演示数据（4 类 + 1 条近似重复）
-│   ├── tests/                    # 12 个测试模块 / 238 条用例
+│   ├── tests/                    # 13 个测试模块 / 297 条用例
 │   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 阈值标定 + 门禁基线）
 │   ├── requirements.txt          # 全部依赖（含可选 OCR/DB 引擎）
 │   ├── requirements-ci.txt       # CI 依赖（核心 + 生产路径，不含 OCR 栈）
@@ -119,7 +155,11 @@ campus-assistant/
 │       ├── test/setup.ts         # 测试前置（jest-dom 断言 + cleanup）
 │       ├── *.test.ts             # 纯逻辑测试（common / api）
 │       └── components/           # Dashboard / Upload / Notices / Tasks / Search（含 Search.test.tsx）
-├── .github/workflows/ci.yml       # CI：后端测试 + 前端类型检查与构建
+├── .github/workflows/ci.yml       # CI：后端测试 + 检索质量门禁 + 前端类型检查与构建
+├── docs/                          # 架构说明与界面截图
+│   ├── architecture.md           #   分层职责 / 数据流向 / 降级矩阵 / 设计取舍
+│   ├── architecture.svg          #   架构图矢量源（可编辑）
+│   └── images/                   #   README 用图（架构图 + 6 张真实界面截图）
 ├── .env.example                   # 环境变量模板（配置从项目根 .env 读取）
 ├── docker-compose.yml            # 可选：PostgreSQL(pgvector) + 后端
 ├── start.sh / start.bat          # 一键启动脚本

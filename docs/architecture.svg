@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1190" viewBox="0 0 1560 1190">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs>
+<rect x="0.0" y="0.0" width="1560.0" height="1190.0" rx="0" fill="#ffffff"/>
+<text x="40.0" y="40.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="27" font-weight="700" fill="#0f172a" text-anchor="start">校园事务智能助手 · 系统架构</text>
+<text x="40.0" y="66.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="400" fill="#64748b" text-anchor="start">多模态抽取 → 混合检索 → RAG 问答   |   FastAPI · LangGraph · FAISS · BM25 · React · SQLite</text>
+<rect x="40.0" y="92.0" width="1480.0" height="116.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="40.0" y="108.0" width="5.0" height="84.0" rx="2.5" fill="#4f46e5"/>
+<text x="60.0" y="122.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#4f46e5" text-anchor="start">① 前端 SPA</text>
+<text x="204.0" y="122.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">职责：五视图交互与呈现；句级片段、引用溯源、命中来源可视化</text>
+<rect x="60.0" y="144.0" width="273.6" height="46.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="196.8" y="165.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#4f46e5" text-anchor="middle">概览</text>
+<text x="196.8" y="181.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#64748b" text-anchor="middle">统计卡 + 类别分布</text>
+<rect x="351.6" y="144.0" width="273.6" height="46.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="488.4" y="165.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#4f46e5" text-anchor="middle">导入</text>
+<text x="488.4" y="181.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#64748b" text-anchor="middle">文件 / 粘贴文本</text>
+<rect x="643.2" y="144.0" width="273.6" height="46.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="780.0" y="165.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#4f46e5" text-anchor="middle">通知复核</text>
+<text x="780.0" y="181.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#64748b" text-anchor="middle">人工修正与筛选</text>
+<rect x="934.8" y="144.0" width="273.6" height="46.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="1071.6" y="165.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#4f46e5" text-anchor="middle">待办看板</text>
+<text x="1071.6" y="181.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#64748b" text-anchor="middle">四态流转 · 逾期标红</text>
+<rect x="1226.4" y="144.0" width="273.6" height="46.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="1363.2" y="165.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#4f46e5" text-anchor="middle">知识库问答</text>
+<text x="1363.2" y="181.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#64748b" text-anchor="middle">语义检索 / 智能问答</text>
+<line x1="780.0" y1="208.0" x2="780.0" y2="240.0" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#ah)"/>
+<text x="792.0" y="228.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">HTTP / JSON   /api/* · /health</text>
+<rect x="40.0" y="244.0" width="1480.0" height="158.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="40.0" y="260.0" width="5.0" height="126.0" rx="2.5" fill="#0284c7"/>
+<text x="60.0" y="274.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#0284c7" text-anchor="start">② 接入层 · FastAPI</text>
+<text x="316.0" y="274.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">职责：请求校验、路由分发、限流护栏、统一错误语义（429 带跨域头）</text>
+<rect x="60.0" y="296.0" width="228.3" height="44.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="70.0" y="315.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#0284c7" text-anchor="start">/api/documents</text>
+<text x="70.0" y="331.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#475569" text-anchor="start">导入：图片 / PDF / 文本</text>
+<rect x="302.3" y="296.0" width="228.3" height="44.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="312.3" y="315.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#0284c7" text-anchor="start">/api/notices</text>
+<text x="312.3" y="331.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#475569" text-anchor="start">通知列表与人工修正</text>
+<rect x="544.7" y="296.0" width="228.3" height="44.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="554.7" y="315.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#0284c7" text-anchor="start">/api/tasks</text>
+<text x="554.7" y="331.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#475569" text-anchor="start">待办状态流转</text>
+<rect x="787.0" y="296.0" width="228.3" height="44.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="797.0" y="315.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#0284c7" text-anchor="start">/api/search</text>
+<text x="797.0" y="331.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#475569" text-anchor="start">混合检索 + 片段</text>
+<rect x="1029.3" y="296.0" width="228.3" height="44.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="1039.3" y="315.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#0284c7" text-anchor="start">/api/qa</text>
+<text x="1039.3" y="331.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#475569" text-anchor="start">RAG 问答 + 引用</text>
+<rect x="1271.7" y="296.0" width="228.3" height="44.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="1281.7" y="315.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#0284c7" text-anchor="start">/health</text>
+<text x="1281.7" y="331.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-weight="400" fill="#475569" text-anchor="start">运行时能力与降级态</text>
+<text x="60.0" y="370.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">中间件：RateLimitMiddleware —— L1 每 IP/分钟（令牌桶）+ L2 每 IP/日 + L3 全局/日（固定窗口，计数落库）   ·   CORSMiddleware 置于外层，保证 429 可被前端读取</text>
+<line x1="436.8" y1="406.0" x2="436.8" y2="438.0" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#ah)"/>
+<line x1="1123.2" y1="406.0" x2="1123.2" y2="438.0" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#ah)"/>
+<text x="448.8" y="426.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">写入链路（导入）</text>
+<text x="1135.2" y="426.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">读取链路（检索 / 问答）</text>
+<rect x="40.0" y="442.0" width="729.0" height="222.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="40.0" y="458.0" width="5.0" height="190.0" rx="2.5" fill="#d97706"/>
+<text x="60.0" y="472.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#d97706" text-anchor="start">③ 编排层 · LangGraph</text>
+<text x="60.0" y="494.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">职责：把「原始文件」变成「结构化通知 + 待办」</text>
+<rect x="60.0" y="506.0" width="689.0" height="34.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="74.0" y="527.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#d97706" text-anchor="start">parse → extract → normalize → dedup → persist → tasks</text>
+<text x="64.0" y="562.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 多模态统一入口：图片 / PDF / 文本各走对应 parser</text>
+<text x="64.0" y="579.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 文件级去重：sha256 命中已解析文档 → 直接复用，不重复计费</text>
+<text x="64.0" y="596.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· VLM 抽取失败 → 自动降级为规则抽取（正则 + 时间解析）</text>
+<text x="64.0" y="613.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 通知级去重：向量余弦 ≥ 0.90 判为重复，跳过建库</text>
+<text x="64.0" y="630.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 无 langgraph 时退化为顺序执行，逻辑等价（离线可跑）</text>
+<rect x="791.0" y="442.0" width="729.0" height="222.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="791.0" y="458.0" width="5.0" height="190.0" rx="2.5" fill="#059669"/>
+<text x="811.0" y="472.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#059669" text-anchor="start">④ 检索层 · 混合检索</text>
+<text x="811.0" y="494.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">职责：精确串与语义表达都能召回，并给出可解释的命中</text>
+<rect x="811.0" y="506.0" width="689.0" height="34.0" rx="9" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<text x="825.0" y="527.0" font-family="Cascadia Mono, Consolas, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="600" fill="#059669" text-anchor="start">向量召回 + BM25 召回 → 加权 RRF → 相关性过滤 → 句级选片</text>
+<text x="815.0" y="562.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 两路互补：课程名/房间号/电话靠 BM25，近义表述靠向量</text>
+<text x="815.0" y="579.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 加权 RRF（只用名次，免疫两路分数尺度差异），权重 0.1 : 0.9</text>
+<text x="815.0" y="596.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 相关性阈值过滤 → filtered 标志，区分「不相关」与「库内确实没有」</text>
+<text x="815.0" y="613.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 句级选片：按查询挑出最相关句子，避免从字中间硬切出残句</text>
+<text x="815.0" y="630.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475569" text-anchor="start">· 索引 FAISS IndexFlatIP；不可用时退化为 numpy 余弦（结果等价）</text>
+<line x1="436.8" y1="666.0" x2="436.8" y2="698.0" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#ah)"/>
+<line x1="1123.2" y1="666.0" x2="1123.2" y2="698.0" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#ah)"/>
+<text x="448.8" y="688.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">调用抽取能力</text>
+<text x="1135.2" y="688.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">查询向量 / 生成答案</text>
+<rect x="40.0" y="702.0" width="1480.0" height="150.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="40.0" y="718.0" width="5.0" height="118.0" rx="2.5" fill="#7c3aed"/>
+<text x="60.0" y="732.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#7c3aed" text-anchor="start">⑤ 能力层 · Providers</text>
+<text x="348.0" y="732.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">职责：外部能力统一封装；无 Key 也能跑通全链路（每项均可降级）</text>
+<rect x="60.0" y="754.0" width="348.0" height="86.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="60.0" y="764.0" width="3.5" height="66.0" rx="1.75" fill="#7c3aed"/>
+<text x="74.0" y="778.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a" text-anchor="start">VLM · 视觉抽取</text>
+<text x="74.0" y="798.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">qwen3-vl-plus @ dashscope</text>
+<text x="74.0" y="814.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">海报 / 截图 → 结构化字段</text>
+<text x="74.0" y="830.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">失败 → 规则抽取兜底</text>
+<rect x="424.0" y="754.0" width="348.0" height="86.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="424.0" y="764.0" width="3.5" height="66.0" rx="1.75" fill="#7c3aed"/>
+<text x="438.0" y="778.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a" text-anchor="start">OCR · 文字识别</text>
+<text x="438.0" y="798.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">RapidOCR / PaddleOCR</text>
+<text x="438.0" y="814.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">扫描件与图片文字层</text>
+<text x="438.0" y="830.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">未安装 → stub（不阻断）</text>
+<rect x="788.0" y="754.0" width="348.0" height="86.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="788.0" y="764.0" width="3.5" height="66.0" rx="1.75" fill="#7c3aed"/>
+<text x="802.0" y="778.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a" text-anchor="start">Embedding · 向量化</text>
+<text x="802.0" y="798.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">text-embedding-v4（1024 维）</text>
+<text x="802.0" y="814.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">无 Key → local_hash 兜底</text>
+<text x="802.0" y="830.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">降级态由 /health 暴露</text>
+<rect x="1152.0" y="754.0" width="348.0" height="86.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="1152.0" y="764.0" width="3.5" height="66.0" rx="1.75" fill="#7c3aed"/>
+<text x="1166.0" y="778.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#0f172a" text-anchor="start">LLM Client · 生成</text>
+<text x="1166.0" y="798.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">OpenAI 兼容协议</text>
+<text x="1166.0" y="814.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">进程级连接复用（省握手）</text>
+<text x="1166.0" y="830.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">超时 / 重试 / 错误分级</text>
+<line x1="780.0" y1="856.0" x2="780.0" y2="890.0" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#ah)"/>
+<text x="792.0" y="878.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#64748b" text-anchor="start">SQLAlchemy 2.0 读写</text>
+<rect x="40.0" y="894.0" width="1480.0" height="152.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="40.0" y="910.0" width="5.0" height="120.0" rx="2.5" fill="#475569"/>
+<text x="60.0" y="924.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#475569" text-anchor="start">⑥ 存储层 · SQLAlchemy 2.0</text>
+<text x="428.0" y="924.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">默认 SQLite（演示零依赖），可切 PostgreSQL —— 仅需改 DATABASE_URL</text>
+<rect x="60.0" y="946.0" width="276.8" height="84.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="60.0" y="956.0" width="3.5" height="64.0" rx="1.75" fill="#475569"/>
+<text x="74.0" y="970.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0f172a" text-anchor="start">notices / documents</text>
+<text x="74.0" y="990.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">抽取结果与原始文档</text>
+<text x="74.0" y="1006.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">置信度 · 复核标记 · 去重关系</text>
+<rect x="350.8" y="946.0" width="276.8" height="84.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="350.8" y="956.0" width="3.5" height="64.0" rx="1.75" fill="#475569"/>
+<text x="364.8" y="970.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0f172a" text-anchor="start">tasks / task_events</text>
+<text x="364.8" y="990.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">待办与状态流转事件</text>
+<text x="364.8" y="1006.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">截止/提醒时间 · 逾期判定</text>
+<rect x="641.6" y="946.0" width="276.8" height="84.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="641.6" y="956.0" width="3.5" height="64.0" rx="1.75" fill="#475569"/>
+<text x="655.6" y="970.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0f172a" text-anchor="start">notice_embeddings</text>
+<text x="655.6" y="990.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">向量持久化（BLOB + 维度）</text>
+<text x="655.6" y="1006.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">启动加载进索引，维度不符跳过</text>
+<rect x="932.4" y="946.0" width="276.8" height="84.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="932.4" y="956.0" width="3.5" height="64.0" rx="1.75" fill="#475569"/>
+<text x="946.4" y="970.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0f172a" text-anchor="start">rate_limit_counters</text>
+<text x="946.4" y="990.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">限流日计数（原子占位）</text>
+<text x="946.4" y="1006.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">多 worker 共享 · 重启不清零</text>
+<rect x="1223.2" y="946.0" width="276.8" height="84.0" rx="10" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="1223.2" y="956.0" width="3.5" height="64.0" rx="1.75" fill="#475569"/>
+<text x="1237.2" y="970.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0f172a" text-anchor="start">storage/</text>
+<text x="1237.2" y="990.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">文件名为 {sha前12位}_{原名}</text>
+<text x="1237.2" y="1006.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#475569" text-anchor="start">仅文件类落盘，粘贴文本不落盘</text>
+<rect x="40.0" y="1060.0" width="1480.0" height="84.0" rx="14" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
+<rect x="40.0" y="1076.0" width="5.0" height="52.0" rx="2.5" fill="#dc2626"/>
+<text x="60.0" y="1090.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#dc2626" text-anchor="start">⑦ 横切 · 降级与护栏</text>
+<text x="268.0" y="1090.0" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#64748b" text-anchor="start">职责：任何外部依赖失效都不返回 500 —— 可用性优先，且降级态可被观测</text>
+<rect x="60.0" y="1108.0" width="348.0" height="26.0" rx="7" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
+<text x="234.0" y="1125.5" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="middle">VLM 失败 → 规则抽取</text>
+<rect x="424.0" y="1108.0" width="348.0" height="26.0" rx="7" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
+<text x="598.0" y="1125.5" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="middle">LLM 失败 → 抽取式回答（答案不中断）</text>
+<rect x="788.0" y="1108.0" width="348.0" height="26.0" rx="7" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
+<text x="962.0" y="1125.5" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="middle">Embedding 降级 → local_hash（/health 暴露）</text>
+<rect x="1152.0" y="1108.0" width="348.0" height="26.0" rx="7" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>
+<text x="1326.0" y="1125.5" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" font-weight="500" fill="#b91c1c" text-anchor="middle">限流存储异常 → 放行 + 告警</text>
+</svg>
