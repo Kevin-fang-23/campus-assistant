@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -167,3 +168,81 @@ def test_validation_errors(client: TestClient) -> None:
     assert client.post("/api/documents/text", json={"content": ""}).status_code == 422
     assert client.get("/api/tasks", params={"status": "unknown"}).status_code == 400
     assert client.get("/api/tasks/999999").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 时区回归：客户端提交 tz-aware 时间（`...Z`）
+#
+# 背景：浏览器端用 `new Date(v).toISOString()` 提交 datetime-local 的值，
+# 产出的是**带 Z 的 tz-aware** 时间串；而项目内部（services/datetime_utils、
+# graph/nodes）一律用 naive 本地时间。两者相减会抛
+#   TypeError: can't subtract offset-naive and offset-aware datetimes
+# 于是「通知复核 → 保存并重置待办」稳定 500（崩溃点在 _priority_by_due）。
+#
+# 这几条用例存在的理由：修复前**整个测试套件只有 naive 时间字面量**，
+# 从未覆盖浏览器实际发出的形式，所以 CI 全绿却漏掉了这个真实缺陷。
+# 断言刻意写成「等于同一瞬时的本地墙钟」，而不是写死某个小时数，
+# 这样在任何时区的机器上都能同时抓住「崩溃」和「静默偏移」两类问题。
+# ---------------------------------------------------------------------------
+
+
+def _local_wall_clock(iso_utc: str) -> str:
+    """把 `...Z` 时间换算成本地墙钟字符串（与 to_naive_local 的语义一致）。"""
+    aware = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+    return aware.astimezone().replace(tzinfo=None).isoformat()
+
+
+def test_notice_update_accepts_timezone_aware_datetime(client: TestClient) -> None:
+    """通知人工复核：提交带 Z 的时间不得 500，且落库值不得偏移。"""
+    notices = client.get("/api/notices").json()
+    assert notices, "需要至少一条通知"
+    nid = notices[0]["id"]
+
+    aware = "2026-10-01T08:12:00.000Z"
+    resp = client.patch(
+        f"/api/notices/{nid}",
+        json={"title": "时区回归：通知", "deadline": aware, "event_time": aware},
+    )
+    assert resp.status_code == 200, resp.text
+
+    body = resp.json()
+    expected = _local_wall_clock(aware)
+    assert body["deadline"] == expected, f"deadline 偏移了：{body['deadline']} != {expected}"
+    assert body["event_time"] == expected
+    # 待办被重建 —— 说明确实走过了崩溃点 _priority_by_due
+    assert body["tasks"], "应生成待办（崩溃点就在优先级计算里）"
+
+
+def test_notice_update_with_naive_datetime_still_works(client: TestClient) -> None:
+    """兼容性：naive 入参（旧客户端 / 测试）行为完全不变。"""
+    notices = client.get("/api/notices").json()
+    nid = notices[0]["id"]
+    resp = client.patch(
+        f"/api/notices/{nid}",
+        json={"title": "时区回归：naive 不变", "deadline": "2026-11-05T09:30:00"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deadline"] == "2026-11-05T09:30:00"
+
+
+def test_task_create_accepts_timezone_aware_datetime(client: TestClient) -> None:
+    """同一缺陷在待办接口上的回归（Tasks.tsx 此前也用 toISOString()）。"""
+    aware = "2026-10-01T08:12:00.000Z"
+    resp = client.post(
+        "/api/tasks",
+        json={"title": "时区回归：待办", "category": "other", "due_at": aware},
+    )
+    assert resp.status_code == 201, resp.text
+    expected = _local_wall_clock(aware)
+    assert resp.json()["due_at"] == expected, "due_at 偏移了"
+
+
+def test_task_update_accepts_timezone_aware_datetime(client: TestClient) -> None:
+    """待办编辑同样收 tz-aware 时间。"""
+    created = client.post(
+        "/api/tasks", json={"title": "时区回归：待办编辑", "category": "other"}
+    ).json()
+    aware = "2026-12-31T15:00:00.000Z"
+    resp = client.patch(f"/api/tasks/{created['id']}", json={"due_at": aware})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["due_at"] == _local_wall_clock(aware)

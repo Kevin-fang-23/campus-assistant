@@ -14,6 +14,7 @@ import {
   STATUS_COLORS,
   STATUS_LABELS,
   STATUS_ORDER,
+  toApiDateTime,
   toLocalInputValue,
 } from "../common";
 
@@ -174,8 +175,8 @@ function TaskModal({
       title: form.title.trim(),
       detail: form.detail?.trim() || null,
       category: form.category,
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-      remind_at: form.remind_at ? new Date(form.remind_at).toISOString() : null,
+        due_at: toApiDateTime(form.due_at),
+        remind_at: toApiDateTime(form.remind_at),
       priority: Number(form.priority),
       notice_id: form.notice_id ?? null,
     };

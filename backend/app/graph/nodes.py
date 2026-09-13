@@ -11,6 +11,7 @@ from ..models import Category
 from ..providers.vlm import get_vlm
 from ..schemas import ExtractedNotice, TaskDraft
 from ..services import rule_extract
+from ..services.datetime_utils import to_naive_local
 from ..services.vector_store import get_store
 from .state import PipelineState
 
@@ -182,7 +183,11 @@ def _mk(title: str, category: str, due: datetime | None, priority: int,
 def _priority_by_due(due: datetime | None, base: datetime) -> int:
     if not due:
         return 3
-    hours = (due - base).total_seconds() / 3600
+    # 纵深防御：入口（schemas 的 NaiveLocalDateTime）已做归一化，这里再兜一次。
+    # 因为 due 可能直接来自数据库或历史数据，一旦某个是 tz-aware，
+    # `due - base` 会抛 TypeError，让整条「保存并重置待办」以 500 收场 ——
+    # 而这类错误只在真实浏览器提交（带 Z）时才出现，单测很难覆盖。
+    hours = (to_naive_local(due) - to_naive_local(base)).total_seconds() / 3600  # type: ignore[operator]
     if hours <= 48:
         return 1
     if hours <= 168:

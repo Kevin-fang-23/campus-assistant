@@ -76,6 +76,25 @@ export function toLocalInputValue(iso: string | null | undefined): string {
   )}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * 把 datetime-local 的值转成后端要的「naive 本地墙钟」字符串。
+ *
+ * ⚠️ 不要用 `new Date(v).toISOString()` —— 它有两个叠加的坑：
+ *   1. 产出 `...Z`（带时区偏移），后端解析成 tz-aware 时间；而项目内部全程是
+ *      naive 本地时间，两者相减会抛 TypeError，表现为「保存并重置待办」稳定 500。
+ *   2. 它把本地墙钟换算成 UTC，于是 GMT+8 下用户填的 16:12 会变成 08:12，
+ *      即使不崩也会静默偏移一个时区 —— 比崩溃更糟，因为它不报错。
+ *
+ * 后端约定见 `backend/app/services/datetime_utils.to_naive_local`。
+ */
+export function toApiDateTime(localValue: string | null | undefined): string | null {
+  const v = (localValue ?? "").trim();
+  if (!v) return null;
+  // datetime-local 给的是 `yyyy-MM-ddTHH:mm`（16 位），补秒即可；
+  // 刻意不追加 Z、不做时区换算，保持 naive 语义。
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v) ? `${v}:00` : v;
+}
+
 export function isOverdue(due_at: string | null | undefined, status?: string): boolean {
   if (!due_at) return false;
   if (status && (status === "done" || status === "archived")) return false;

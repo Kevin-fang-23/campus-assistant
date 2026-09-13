@@ -10,7 +10,35 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-__all__ = ["DateHit", "extract_datetimes", "normalize_text", "pick_times"]
+__all__ = [
+    "DateHit",
+    "extract_datetimes",
+    "normalize_text",
+    "pick_times",
+    "to_naive_local",
+]
+
+
+def to_naive_local(value: datetime | None) -> datetime | None:
+    """把时间统一成「naive 本地墙钟」，即本模块的约定表示。
+
+    为什么需要它：JSON 里带时区偏移的时间串（浏览器
+    `new Date(x).toISOString()` 产出 `...Z`）会被解析成 **tz-aware** datetime，
+    一旦与 naive 的 base 相减就抛
+    `TypeError: can't subtract offset-naive and offset-aware datetimes`
+    —— 这正是「通知复核 → 保存并重置待办」稳定 500 的根因。
+
+    为什么用 `astimezone()`（转本地）而不是 `astimezone(timezone.utc)`：
+    本项目的 user-facing 时间（event_time / deadline / due_at）是**本地墙钟**语义
+    （相对时间解析、截止补 23:59 都以 `datetime.now()` 为基准）。
+    若把 aware 值降级成 naive-UTC，GMT+8 下用户填的 16:12 会被存成 08:12，
+    静默偏移一个时区 —— 比崩溃更糟，因为它不报错。
+
+    naive 输入原样返回，因此对既有抽取链路零影响。
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone().replace(tzinfo=None)
 
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
               "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}

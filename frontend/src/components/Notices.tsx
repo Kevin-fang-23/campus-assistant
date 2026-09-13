@@ -7,6 +7,7 @@ import {
   categoryLabel,
   confidenceColor,
   formatDateTime,
+  toApiDateTime,
   toLocalInputValue,
 } from "../common";
 
@@ -154,8 +155,8 @@ function EditCard({ notice, saving, setSaving, onCancel, onSaved }: EditProps) {
         location: form.location.trim() || undefined,
         course: form.course.trim() || undefined,
         summary: form.summary.trim() || undefined,
-        deadline: form.deadline ? new Date(form.deadline).toISOString() : null,
-        event_time: form.event_time ? new Date(form.event_time).toISOString() : null,
+        deadline: toApiDateTime(form.deadline),
+        event_time: toApiDateTime(form.event_time),
         contacts: form.contacts
           .split(",")
           .map((s) => s.trim())

@@ -8,6 +8,7 @@ import {
   isOverdue,
   STATUS_LABELS,
   statusLabel,
+  toApiDateTime,
   toLocalInputValue,
 } from "./common";
 
@@ -95,5 +96,34 @@ describe("confidenceColor", () => {
     expect(confidenceColor(0.79)).toBe("#d97706");
     expect(confidenceColor(0.54)).toBe("#dc2626");
     expect(confidenceColor(0)).toBe("#dc2626");
+  });
+});
+
+// 这一组是「通知复核保存 500」的回归护栏。
+// 此前组件用 new Date(v).toISOString() 提交，产出带 Z 的 tz-aware 时间串：
+//   1) 后端内部是 naive 本地时间，两者相减抛 TypeError → 稳定 500；
+//   2) toISOString 还会把本地墙钟换算成 UTC，GMT+8 下 16:12 变 08:12（静默偏移）。
+describe("toApiDateTime", () => {
+  it("datetime-local 的值补秒后原样提交，保持 naive（绝不含 Z）", () => {
+    expect(toApiDateTime("2026-10-01T16:12")).toBe("2026-10-01T16:12:00");
+  });
+
+  it("不把本地墙钟换算成 UTC —— 小时数必须保持不变", () => {
+    const out = toApiDateTime("2026-10-01T16:12")!;
+    expect(out).not.toContain("Z");
+    expect(out).not.toContain("+");
+    // 关键：小时仍是 16 点，没有被 toISOString 改成 08 点
+    expect(out.slice(11, 13)).toBe("16");
+  });
+
+  it("空值统一为 null（后端据此清空该字段）", () => {
+    expect(toApiDateTime("")).toBeNull();
+    expect(toApiDateTime("   ")).toBeNull();
+    expect(toApiDateTime(null)).toBeNull();
+    expect(toApiDateTime(undefined)).toBeNull();
+  });
+
+  it("已带秒的值不再改动，避免二次加工", () => {
+    expect(toApiDateTime("2026-10-01T16:12:30")).toBe("2026-10-01T16:12:30");
   });
 });

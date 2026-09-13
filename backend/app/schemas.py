@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 
 from .models import Category, TaskStatus
+from .services.datetime_utils import to_naive_local
+
+# 客户端可提交的时间字段统一用它标注（见下面三个 *In schema）。
+# 归一化实现在 services/datetime_utils（叶子模块），避免 schemas ←→ services 循环依赖。
+NaiveLocalDateTime = Annotated[datetime, AfterValidator(to_naive_local)]
 
 
 class ORMModel(BaseModel):
@@ -148,8 +153,10 @@ class NoticeUpdateIn(BaseModel):
     issuer: str | None = None
     location: str | None = None
     course: str | None = None
-    event_time: datetime | None = None
-    deadline: datetime | None = None
+    # 用 NaiveLocalDateTime 而非 datetime：客户端可能提交 `...Z`（tz-aware），
+    # 直接进入待办优先级计算会 TypeError → 500。详见 to_naive_local 的说明。
+    event_time: NaiveLocalDateTime | None = None
+    deadline: NaiveLocalDateTime | None = None
     contacts: list[str] | None = None
     tags: list[str] | None = None
     reviewed: bool | None = None
@@ -159,8 +166,8 @@ class TaskCreateIn(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     detail: str | None = None
     category: str = Category.OTHER
-    due_at: datetime | None = None
-    remind_at: datetime | None = None
+    due_at: NaiveLocalDateTime | None = None
+    remind_at: NaiveLocalDateTime | None = None
     priority: int = Field(default=2, ge=1, le=3)
     notice_id: int | None = None
 
@@ -168,8 +175,8 @@ class TaskCreateIn(BaseModel):
 class TaskUpdateIn(BaseModel):
     title: str | None = None
     detail: str | None = None
-    due_at: datetime | None = None
-    remind_at: datetime | None = None
+    due_at: NaiveLocalDateTime | None = None
+    remind_at: NaiveLocalDateTime | None = None
     priority: int | None = Field(default=None, ge=1, le=3)
     status: Literal["todo", "doing", "done", "archived"] | None = None
     note: str | None = None
