@@ -278,13 +278,16 @@ class RateLimiter:
         为什么需要：L2 的占位发生在 L3 之后，若 L2 拒绝而 L3 的占位不回退，
         那么每次「被每 IP 额度拦住」的请求都会永久吃掉一次全局额度 ——
         一个正常用户的正常拒绝会把全局护栏推向提前耗尽。
+
+        容错职责**只在 `DailyCounter.release()` 一层**：它内部已捕获存储异常
+        并打 warning（「限流计数回退失败（累计值会略微偏高）」）。
+        此处不再包 try/except —— 两层都兜底时，外层 except 是永不执行的死代码，
+        而永不执行的代码意味着下次改动时没人会发现它已经坏了
+        （P0-1 的 NameError 就是这么来的）。
         """
         if not should_release:
             return
-        try:
-            self._counter.release(global_key, day)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("全局额度回退失败（累计值会略微偏高）：%s", exc)
+        self._counter.release(global_key, day)
 
     def reset(self, *, clear_store: bool = True) -> None:
         """清空令牌桶与**本实例**的日计数。**仅供测试使用。**

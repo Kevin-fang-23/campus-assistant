@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Category, Document, Notice, Task, TaskEvent, TaskStatus, utcnow
+from ..models import Category, Document, Notice, Task, TaskEvent, TaskStatus, local_now
 from ..schemas import StatsOut, TaskCreateIn, TaskDetailOut, TaskOut, TaskUpdateIn
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -128,7 +128,7 @@ def update_task(task_id: int, payload: TaskUpdateIn, db: Session = Depends(get_d
     if new_status and new_status != task.status:
         old = task.status
         task.status = new_status
-        task.completed_at = utcnow() if new_status == TaskStatus.DONE else None
+        task.completed_at = local_now() if new_status == TaskStatus.DONE else None
         db.flush()
         db.add(TaskEvent(task_id=task.id, from_status=old, to_status=new_status, note=note))
     elif note:

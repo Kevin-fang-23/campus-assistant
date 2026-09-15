@@ -628,3 +628,34 @@ def test_notice_update_invalidates_qa_cache(client: TestClient, monkeypatch) -> 
     )
     assert upd.status_code == 200, upd.text
     assert len(get_cache()) == 0, "修正通知后缓存必须被清空"
+
+
+# --------------------------------------------------------------------------
+# 9. 请求体大小护栏：超大 body 直接 413，不得被完整读进内存
+# --------------------------------------------------------------------------
+def test_oversized_qa_body_is_rejected_with_413(client: TestClient, monkeypatch) -> None:
+    """/api/qa 的 body 超过中间件上限时必须返回 413。
+
+    背景：QaCacheMiddleware._read_body 需要读完整个 body 才能解析 QAIn，
+    若无上限，攻击者可发送超大 body 耗尽进程内存。/api/qa 的合法载荷只有
+    {query, top_k}，几十字节量级，1MB 上限已留足余量。
+
+    注意：该护栏只在缓存开启时生效（中间件仅在 qa_cache_enabled=True 时
+    读 body），因此这里显式打开缓存开关。
+    """
+    from app.middleware import QaCacheMiddleware
+
+    monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
+    # 构造一个明显超过 _MAX_BODY_BYTES 的 query
+    oversized = "x" * (QaCacheMiddleware._MAX_BODY_BYTES + 1024)  # noqa: SLF001
+    resp = client.post("/api/qa", json={"query": oversized, "top_k": 3})
+    assert resp.status_code == 413, (
+        f"超大 body 应被 413 拒绝，实际 {resp.status_code}：{resp.text[:200]}"
+    )
+
+
+def test_normal_qa_body_passes_size_guard(client: TestClient, monkeypatch) -> None:
+    """正常大小的 body 不受护栏影响（防误伤回归）。"""
+    monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
+    resp = client.post("/api/qa", json={"query": "操作系统作业什么时候截止", "top_k": 3})
+    assert resp.status_code == 200, f"正常请求不应被 413 拦截：{resp.status_code}"

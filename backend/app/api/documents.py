@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..db import get_db
 from ..models import Document
@@ -19,7 +20,12 @@ logger = logging.getLogger(__name__)
 async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)) -> IngestResult:
     data = await file.read()
     try:
-        return ingest_bytes(db, data, file.filename or "upload.bin", mime=file.content_type)
+        # ingest_bytes 是同步阻塞的（文件 I/O / 数据库 / VLM / OCR），
+        # 直接在 async 端点里调会卡住事件循环，期间所有其它请求（含 /health）
+        # 都得等它跑完。丢进线程池执行，事件循环保持响应。
+        return await run_in_threadpool(
+            ingest_bytes, db, data, file.filename or "upload.bin", mime=file.content_type
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

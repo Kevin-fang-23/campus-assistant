@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import (
     JSON,
@@ -19,8 +19,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+def local_now() -> datetime:
+    """审计时间戳统一用「naive 本地墙钟」。
+
+    与业务时间（deadline / event_time / due_at）保持同一时钟约定 ——
+    全项目的时间语义是本地墙钟（见 services/datetime_utils.to_naive_local 的
+    说明：相对时间解析、截止补 23:59 都以 `datetime.now()` 为基准）。
+
+    历史实现是 `local_now()`（naive UTC），与业务时间的本地时钟**混在同一张表里**：
+    `tasks.py` 的逾期/即将到期判断用 `datetime.now()`（本地）比对 `due_at`，
+    而 `completed_at` 却写入 UTC —— 非 UTC 时区的服务器上两套时间相差一个时区偏移，
+    一旦拿审计时间与业务时间做比较（或前端展示 created_at）就会系统性偏差。
+    统一为本地时钟后，全库时间可直接相互比较。
+    """
+    return datetime.now()
 
 
 # ---- 取值常量（用 String 存储，避免 PG enum 迁移负担）----
@@ -76,7 +88,7 @@ class Document(Base):
     raw_text: Mapped[str | None] = mapped_column(Text)
     parse_meta: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, index=True)
 
     notices: Mapped[list["Notice"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
@@ -108,8 +120,8 @@ class Notice(Base):
         ForeignKey("notices.id", ondelete="SET NULL"), nullable=True
     )
     dedup_score: Mapped[float | None] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, onupdate=local_now)
 
     document: Mapped[Document] = relationship(back_populates="notices")
     tasks: Mapped[list["Task"]] = relationship(
@@ -134,8 +146,8 @@ class Task(Base):
     source: Mapped[str] = mapped_column(String(16), default="auto")  # auto | manual
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, onupdate=local_now)
 
     notice: Mapped[Notice | None] = relationship(back_populates="tasks")
     events: Mapped[list["TaskEvent"]] = relationship(
@@ -156,7 +168,7 @@ class TaskEvent(Base):
     from_status: Mapped[str | None] = mapped_column(String(16))
     to_status: Mapped[str] = mapped_column(String(16))
     note: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=local_now)
 
     task: Mapped[Task] = relationship(back_populates="events")
 
@@ -174,4 +186,4 @@ class NoticeEmbedding(Base):
     provider: Mapped[str] = mapped_column(String(32))
     text: Mapped[str] = mapped_column(Text)
     vector: Mapped[bytes] = mapped_column(LargeBinary)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=local_now)

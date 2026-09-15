@@ -72,6 +72,11 @@ class QaCacheMiddleware:
     # 仅这一个路径。其它接口的缓存策略各自决定。
     _QA_PATH = "/api/qa"
 
+    # body 大小上限：/api/qa 的合法载荷只有 {query, top_k}，几十字节量级；
+    # 1MB 已留足余量。没有上限时，攻击者可以发送超大 body 耗尽进程内存
+    # （_read_body 必须读完整个 body 才能解析）。超限直接 413，不再继续读。
+    _MAX_BODY_BYTES = 1024 * 1024
+
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -88,8 +93,15 @@ class QaCacheMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # 1. 读 body（必须先消费 receive 才能解析）
+        # 1. 读 body（必须先消费 receive 才能解析）；超限返回 None
         body = await self._read_body(receive)
+        if body is None:
+            response = JSONResponse(
+                status_code=413,
+                content={"detail": "请求体过大。"},
+            )
+            await response(scope, receive, send)
+            return
 
         # 2. 解析 QAIn：失败透传，由 FastAPI endpoint 返回 422
         try:
@@ -116,23 +128,32 @@ class QaCacheMiddleware:
     # ------------------------------------------------------------------
     # 内部：读 body / 重构 receive
     # ------------------------------------------------------------------
-    async def _read_body(self, receive: Receive) -> bytes:
-        """单次消费 receive，拼出完整 body。
+    async def _read_body(self, receive: Receive) -> bytes | None:
+        """单次消费 receive，拼出完整 body；超过 `_MAX_BODY_BYTES` 返回 None。
 
         必须拿到完整的 body 才能解析 QAIn；Starlette 会把 body 切成
         多个 chunk，靠 `more_body` 标记判断是否结束。
+
+        超限处理：一旦累计字节数超过上限立即返回 None（调用方回 413），
+        并继续把剩余 chunk 消费掉 —— 若提前停止读取，部分服务器/客户端
+        会因请求未被完整消费而挂起或报错。
         """
         body = b""
+        oversized = False
         while True:
             msg = await receive()
             mtype = msg.get("type")
             if mtype == "http.request":
-                body += msg.get("body", b"")
+                if not oversized:
+                    body += msg.get("body", b"")
+                    if len(body) > self._MAX_BODY_BYTES:
+                        oversized = True
+                        body = b""  # 释放已累积内容，防内存被撑大
                 if not msg.get("more_body", False):
                     break
             elif mtype == "http.disconnect":
                 break
-        return body
+        return None if oversized else body
 
     async def _forward_with_body(
         self, scope: Scope, original_receive: Receive, send: Send, body: bytes

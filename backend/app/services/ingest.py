@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..graph.pipeline import run_pipeline
-from ..models import Document, DocKind, DocStatus, Notice, Task, TaskEvent, TaskStatus, utcnow
+from ..models import Document, DocKind, DocStatus, Notice, Task, TaskEvent, TaskStatus, local_now
 from ..parsers import detect_kind, parse_bytes
 from ..schemas import DocumentOut, IngestResult, NoticeOut, TaskOut
 from .hybrid import index_notice
@@ -176,7 +176,7 @@ def ingest_bytes(
 def ingest_text(
     db: Session, content: str, filename: str | None = None, base_time: datetime | None = None
 ) -> IngestResult:
-    name = filename or f"paste-{utcnow():%Y%m%d%H%M%S}.txt"
+    name = filename or f"paste-{local_now():%Y%m%d%H%M%S}.txt"
     if not name.lower().endswith((".txt", ".md")):
         name += ".txt"
     return ingest_bytes(db, content.encode("utf-8"), name, mime="text/plain", base_time=base_time)

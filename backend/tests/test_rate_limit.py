@@ -153,39 +153,35 @@ def test_per_ip_daily_cap_is_per_ip(monkeypatch) -> None:
 
 
 def test_release_failure_is_logged_not_raised(monkeypatch, caplog) -> None:
-    """`_release` 的异常分支必须**只告警不抛**，且 logger 必须真实可用。
+    """存储回退失败必须**只告警不抛**——容错职责在 `DailyCounter.release` 一层。
 
-    回归用例。原实现里该分支调用 `logger.warning`，但 `rate_limit.py`
-    从未定义 `logger`（既没 `import logging` 也没赋值）—— 一旦走进这个
-    except，就会抛 `NameError: name 'logger' is not defined`，
-    把一次本应正常返回的 429 变成 500。
+    回归用例。历史背景：`_release` 曾自带一层 try/except，但内层
+    `DailyCounter.release` 已吞掉所有存储异常，外层 except 成了永不执行的
+    死代码——且它引用的 `logger` 当时根本未定义（P0-1 的 NameError）。
+    收敛后容错只保留在 `DailyCounter.release`：存储故障由它捕获并打
+    warning（「限流计数回退失败」），`_release` 不再包 try/except。
 
-    为什么不能只靠端到端用例覆盖：`DailyCounter.release` 内部已自行
-    try/except 吞掉存储异常，所以在 `check()` 层面几乎无法把异常送到
-    这一行（端到端用例实测**无法**触发，见下方说明）。因此这里做
-    层次化验证 —— 把 `_counter.release` 换成一个必然抛异常的桩，
-    直接驱动 `_release`，确保异常被兜住且有日志产出。
-
-    验证三点：
-    1. 不抛异常（修复前会 NameError）；
-    2. 走的是 `except` 分支（异常被吞）；
-    3. 确实写了一条 warning 日志（用 caplog 断言）。
+    验证方式：把**存储层**的 release 换成必然抛异常的桩（而不是桩掉
+    `_counter.release` —— 那样会绕过真正承担容错的那一层），驱动完整的
+    `_release → DailyCounter.release → store.release` 链路，断言：
+    1. 不抛异常（修复前会 NameError；收敛后由 DailyCounter 兜住）；
+    2. 确实写了一条 warning 日志（来自 rate_limit_store）。
     """
     clock = FakeClock()
     limiter = RateLimiter(now_fn=clock.now_fn, wall_fn=clock.wall_fn)
 
-    def boom(_key: str, _day: str) -> None:
+    def boom(_day: str, _key: str) -> None:
         raise RuntimeError("simulated store failure")
 
-    monkeypatch.setattr(limiter._counter, "release", boom)   # noqa: SLF001
+    monkeypatch.setattr(limiter._counter._store, "release", boom)   # noqa: SLF001
 
-    with caplog.at_level(logging.WARNING, logger="app.services.rate_limit"):
-        # 修复前：这里抛 NameError
+    with caplog.at_level(logging.WARNING, logger="app.services.rate_limit_store"):
+        # 修复前：这里抛 NameError；收敛后：异常被 DailyCounter.release 兜住
         limiter._release("global:qa", "2026-09-11", True)     # noqa: SLF001
 
     # 用 getMessage() 拿到已格式化文本；不要对 record.message 再套 % 格式化
     messages = [r.getMessage() for r in caplog.records]
-    assert any("全局额度回退失败" in m for m in messages), (
+    assert any("限流计数回退失败" in m for m in messages), (
         f"回退失败必须留下 warning 日志，实际记录：{messages}"
     )
     assert any(r.levelno == logging.WARNING for r in caplog.records), (
