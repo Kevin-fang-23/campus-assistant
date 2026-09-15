@@ -53,7 +53,8 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 | **LLM 连接复用** | 20 次问答的 TCP 建连数 **21 → 1**（降约 95%） | `pytest tests/test_llm_client_reuse.py`（起真实本地服务器统计 TCP 连接数） |
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
 | **限流计数持久化** | 日计数写 SQLite（WAL，**88.8µs/请求**）：4 个真实子进程共享额度 40 实测**每次恰好放行 40 次**、重启不清零 | `pytest tests/test_rate_limit_persistence.py` |
-| **检索与评测** | 后端 **335 passed**；检索质量门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **问答缓存语义复用** | 字面归一化之外再加查询向量近邻判定：改写问法的复用率 **1/10 → 6/10**，阈值经 22 对标注样本实测标定（**零误配**）、可配置、可回滚 | `python -m eval.run_cache_threshold_eval` |
+| **检索与评测** | 后端 **361 passed**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
 | **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
 
 ---
@@ -73,6 +74,9 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 - **混合检索**：向量（语义）与 BM25（字面精确）双路召回后 RRF 融合。校园场景充斥课程名、房间号、电话、缩写等精确串，向量路对它们不可靠，BM25 一次命中。
 - **句级片段选择**：引用与 LLM 上下文按**句子**择优选取，而非按字符硬截断 —— 引用不会是残句，长通知的关键信息也不会被截掉。
 - **RAG 问答**：`/api/qa` 基于检索结果生成答案，答案内用 `[1] [2]` 标注来源，并附可溯源的引用片段。
+- **两段式问答缓存**：精确 key 命中（零成本，不调上游）之外，再加一层**语义近邻**判定 ——
+  「作业什么时候截止」与「作业截止时间是什么」字面上是两个 key，语义上却是同一问，
+  命中即复用上次答案、不再调用 LLM。阈值经 22 对标注样本实测标定（改写问法复用率 1/10 → 6/10）。
 - **降级可控**：无 Key / 上游失败时自动切换为抽取式回答（`degraded=true`），前端展示逻辑不变。
 
 ### 工程特性
@@ -139,7 +143,7 @@ campus-assistant/
 │   │   ├── db.py                 # 引擎 / Session
 │   │   ├── main.py               # 应用入口 + CORS + 限流 + /health + 静态托管
 │   │   └── seed.py               # 5 条演示数据（4 类 + 1 条近似重复）
-│   ├── tests/                    # 14 个测试模块 / 335 条用例
+│   ├── tests/                    # 16 个测试模块 / 361 条用例
 │   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 阈值标定 + 门禁基线）
 │   ├── requirements.txt          # 全部依赖（含可选 OCR/DB 引擎）
 │   ├── requirements-ci.txt       # CI 依赖（核心 + 生产路径，不含 OCR 栈）
@@ -295,6 +299,50 @@ python -m eval.run_retrieval_eval --embedding dashscope --sweep
 
 LLM 与 Embedding 共用进程级客户端（`providers/llm_client.py`），provider 按需解析客户端引用而非长期持有。实测 20 次 `/api/qa` 的 TCP 建连数 **21 → 1**（含 query embedding 在内的 40 次 HTTP 请求复用同一条连接）。
 
+### 问答缓存：从字面归一化到语义相似
+
+演示现场多个访客依次问同一件事，重复走 LLM 会快速烧掉额度。缓存分两段查找（`services/qa_cache.py`）：
+
+| 段 | 判定 | 成本 | 限流 |
+|---|---|---|---|
+| **精确 key** | 归一化后 `(query, top_k)` 完全相同 | 0（不碰上游） | 不计（无上游开销） |
+| **语义近邻** | 查询向量与缓存条目的 query 向量余弦相似度 ≥ 阈值 | 1 次 embedding | **计入**（确实消耗上游） |
+
+**为什么需要第二段**：第一段只处理"同一个字符串的格式变体"（首尾空白、连续空白、英文大小写）。
+而 `作业什么时候截止` 与 `作业截止时间是什么` 归一化后是两个 key，会各烧一次 LLM —— 答案是同一份。
+
+**阈值怎么定的**（不拍脑袋，方法论与混合检索权重调参一致）：
+
+```
+下界 = 改写对相似度最小值 → 阈值须 ≤ 它才不漏改写
+上界 = 异义对相似度最大值 → 阈值须 >  它才不误配
+```
+
+22 对标注样本（10 条改写 + 12 条*相近但异义*，后者含 5 组只差"问时间还是问地点"的硬负样本）实测：
+
+| 后端 | 维度 | 下界 | 上界 | 阈值 | 改写命中 | 误配 |
+|---|---|---|---|---|---|---|
+| dashscope `text-embedding-v4` | 1024 | 0.498 | 0.797 | **0.86** | **6/10**（字面仅 1/10） | 0/12 |
+| local_hash（离线兜底） | 256 | 0.136 | 0.667 | —（无收益） | 1/10 | — |
+
+两类错误代价不对称：漏命中只是多花一次 LLM，**误配是用户拿到另一个问题的答案且无从察觉**
+（还会被缓存在 TTL 内放大）。因此先在零误配的前提下求命中率最高的一档；
+命中数在 0.80~0.86 一段内同为 6/10，取其中**最高值**以留最大安全边际。
+区间重叠（0.498 ≤ 0.797）说明余弦单判据无法完全分离，这一点连同 4 条会漏掉的改写
+已如实记录在 `eval/CACHE_SEMANTIC_BASELINE.md`。
+
+三个配套设计：
+
+- **零额外成本**：精确 key 先查（不调 embedding）；只有未命中才计算查询向量，
+  且该向量**透传给检索层复用**（`hybrid_search(query, top_k, query_vector=...)`）——
+  命中省一次 LLM，未命中与改造前开销相同。
+- **维度守卫**：切换 embedding 后端后，缓存里会短暂留着旧维度的向量，
+  跨维度算出的"余弦"无意义。`find_similar` 只比对同维度条目，并打一次告警。
+- **可回滚**：`QA_CACHE_SEMANTIC_THRESHOLD=0` 即完全退回字面归一化，无需改代码或回滚发版。
+
+`/health` 的 `cache` 段单独暴露 `semantic_lookups` / `semantic_hits`，
+演示时能直接看出"语义层救回了多少次改写问法"。
+
 ---
 
 ## ⚙️ 配置（`.env`）
@@ -348,6 +396,24 @@ LLM 与 Embedding 共用进程级客户端（`providers/llm_client.py`），prov
 **为什么不用分数做阈值**：三种候选判据（BM25 绝对分 / 余弦 / 句级选片分）实测**区间全部重叠**，
 无法分离「无关」与「相关」—— 根因是中文里单字重合必然发生（"今天天气"撞"明天"里的"天"）。
 判据与阈值取值的完整实测数据见 `eval/RETRIEVAL_BASELINE.md` 第五节。
+
+### 问答缓存
+
+演示现场同一问题被多人重复问时，不必重复烧 LLM 额度。任何路径的结果都会缓存
+（LLM 成功 / LLM 降级为抽取式 / 空召回），知识库变更（入库、人工修正、删除）会立即全部失效。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `QA_CACHE_ENABLED` | `true` | 关掉即完全回退到无缓存（与改造前一致） |
+| `QA_CACHE_TTL_SECONDS` | `300` | 有效期；太长则新通知入库后旧答案存活过久 |
+| `QA_CACHE_MAX_SIZE` | `128` | 内存条目上限，满了按 LRU 淘汰 |
+| `QA_CACHE_SEMANTIC_THRESHOLD` | `0.86` | 语义近邻的余弦阈值；**`0` = 关闭**（回滚开关） |
+
+阈值标定依据与残余风险见 `eval/CACHE_SEMANTIC_BASELINE.md`。
+⚠️ 阈值**随 embedding 后端变化**，换 `EMBEDDING_PROVIDER` 后须重跑
+`python -m eval.run_cache_threshold_eval` 重新定标，不要沿用 0.86 ——
+在 local_hash 上任何阈值都只有 1/10 命中（等于零收益），该后端下建议直接配 `0`。
+服务启动时会检测这种组合并打警告。
 
 ### 请求限流
 
@@ -465,7 +531,7 @@ SQLite 写事务互斥，因此不可能有两个进程同时读到 39 再各自
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | 健康检查与运行时能力（引擎 / 模型 / 向量后端 / 是否降级 / 缓存命中率 / 限流额度余量） |
+| GET | `/health` | 健康检查与运行时能力（引擎 / 模型 / 向量后端 / 是否降级 / 缓存命中率与**语义命中次数** / 限流额度余量） |
 | GET | `/docs` | 交互式 API 文档（OpenAPI） |
 
 完整字段见 `backend/app/schemas.py` 与 `/docs`。
@@ -481,7 +547,7 @@ cd campus-assistant/backend
 pytest -q
 ```
 
-当前 **335 passed**（14 个测试模块 + `conftest.py`）。
+当前 **361 passed**（16 个测试模块 + `conftest.py`）。
 
 > **测试完全不需要 API Key，也不访问外网**：`conftest.py` 已把 VLM / QA 固定为 mock、
 > OCR 固定为 stub，embedding 在无 Key 时自动回退本地哈希。因此可直接在 CI 中运行。
@@ -501,11 +567,14 @@ pytest -q
 | `test_rate_limit_persistence.py` | 日计数持久化：多 worker 额度精确（含**并发 check 不超发**的竞态护栏）、重启不清零、时钟回拨安全、WAL 启用、原子占位/撤销、并发自增不丢更新 |
 | `scripts/verify_rate_limit_multiproc.py` | **真实子进程**端到端：#8 多 worker 额度精确、#9 重启不清零（同进程多实例模拟说服力不足） |
 | `scripts/verify_rate_limit_prod_path.py` | 确认生产路径真的启用了持久化：后端类型、表存在、`journal_mode=wal`、真实请求后计数落库 |
+| `scripts/verify_semantic_cache_e2e.py` | **在真实 embedding 后端上**确认标定阈值在生产链路生效：改写问法命中、相似度与标定记录一致、复用的是同一份答案、阈值 0 时回滚有效（单测用 local_hash + 下调阈值，验不到这个组合） |
 | `test_qa_degradation.py` | 问答降级路径 |
 | `test_qa_cache.py` | 问答缓存：命中跳过 LLM、TTL 过期、LRU 淘汰、知识库变更后失效、命中不消耗限流额度、超大请求体 413 护栏、**命中路径与 response_model 的结构契约** |
+| `test_qa_cache_semantic.py` | 语义缓存：改写问法命中、阈值 0 关闭回滚、只比对同 `top_k`、余弦（非点积）口径、**维度守卫**、过期条目不参与匹配、**语义命中仍计入限流**、**查询向量透传复用** |
 | `test_embedding_backend_truth.py` | 配置后端 vs 实际生效后端的一致性、**降级态拒绝 reindex**（防降级向量覆盖历史向量） |
 | `test_retrieval_set.py` | 检索评测集完整性（规模下限、id 唯一、expected 引用可解析、两路文本分离、**噪声样本量下限与分层齐备**） |
 | `test_eval_gate.py` | 检索质量门禁：劣化必须被拦、改进不得失败、容差边界、基线文件形态 |
+| `test_cache_threshold_eval.py` | 缓存阈值标定：数据集完整性（**改写对不得与字面归一化重合**，否则增量价值失真）、夹逼边界、推荐规则（零误配优先 / 平台区取最高 / 不可分离时如实返回）、扫描表单调性 |
 
 ### 前端
 
@@ -540,10 +609,17 @@ python -m eval.run_retrieval_eval --embedding local_hash --gate
 
 # 确认指标变化可接受后，重新记录基线
 python -m eval.run_retrieval_eval --embedding local_hash --update-baseline
+
+# 问答缓存语义阈值标定（22 对改写/异义样本，两个后端分别定标）
+python -m eval.run_cache_threshold_eval
+
+# 缓存阈值门禁：配置的阈值在标注集上不得误配（CI 用的就是这条）
+python -m eval.run_cache_threshold_eval --embedding local_hash --gate
 ```
 
-基线快照与结论见 `backend/eval/` 下的 `BASELINE_*.md`、`RETRIEVAL_BASELINE.md`，
-供机器比对的门禁基线是 `backend/eval/baseline.json`（需随代码一起提交）。
+基线快照与结论见 `backend/eval/` 下的 `BASELINE_*.md`、`RETRIEVAL_BASELINE.md`、
+`CACHE_SEMANTIC_BASELINE.md`，供机器比对的门禁基线是 `backend/eval/baseline.json`
+（需随代码一起提交）。
 
 ### 持续集成（CI）
 
@@ -551,7 +627,7 @@ python -m eval.run_retrieval_eval --embedding local_hash --update-baseline
 
 | Job | 内容 |
 |---|---|
-| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check`（E/F/W/BLE/RUF100/I/B/UP/SIM 静态检查）→ `pytest -q` → **检索质量门禁** `python -m eval.run_retrieval_eval --gate` |
+| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check`（E/F/W/BLE/RUF100/I/B/UP/SIM 静态检查）→ `pytest -q` → **检索质量门禁** `eval.run_retrieval_eval --gate` → **缓存阈值门禁** `eval.run_cache_threshold_eval --gate` |
 | `frontend` | Node 22 + `npm ci` → `npx tsc --noEmit` → `npm run test` → `npm run build` |
 
 设计取舍：

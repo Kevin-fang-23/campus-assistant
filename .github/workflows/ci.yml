@@ -56,6 +56,17 @@ jobs:
       - name: 检索质量门禁
         run: python -m eval.run_retrieval_eval --embedding local_hash --gate
 
+      # 缓存语义阈值的门禁：只守一条**安全不变量** —— 配置的阈值在标注集上
+      # 不得把「相近但异义」的问法判成命中（那会让用户拿到另一个问题的答案，
+      # 且被缓存在 TTL 内放大）。不去卡命中率：那是收益，会随语料/后端波动，
+      # 卡死只会带来假红。
+      #
+      # 用 local_hash：离线、确定性、毫秒级，CI 无 Key 时正是该后端。
+      # 注意这里不校验阈值是否"最优" —— 最优值依赖 dashscope 的向量分布，
+      # 只能在有 Key 的环境人工重跑标定（见 eval/CACHE_SEMANTIC_BASELINE.md）。
+      - name: 缓存语义阈值门禁
+        run: python -m eval.run_cache_threshold_eval --embedding local_hash --gate
+
   frontend:
     name: 前端测试、类型检查与构建
     runs-on: ubuntu-latest

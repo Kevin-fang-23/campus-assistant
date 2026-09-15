@@ -39,6 +39,43 @@
    缓存命中不消耗上游资源，本就不该挤占额度。FastAPI 同步端点
    跑在线程池，加锁保证线程安全。
 
+## 语义相似匹配（第二阶段）
+
+字面归一化只处理"同一个字符串的格式变体"，无法处理**同一个意图的不同问法**：
+
+    作业什么时候截止  ‖  作业截止时间是什么
+
+这两句归一化后是两个不同的 key，会各走一次完整流程（各烧一次 LLM + embedding），
+而它们的答案其实是同一份。演示现场招聘官用不同措辞问同一件事，是必然发生的。
+
+因此在精确 key 之外再加一道**查询向量近邻**判定（`QaSemanticCache.find_similar`）：
+
+    sim(query_vec, cached_vec) >= qa_cache_semantic_threshold  →  判定命中，复用结果
+
+### 四个关键设计取舍
+
+1. **阈值由实测定标，不拍数字**。方法与混合权重调参（`run_retrieval_eval.py
+   --sweep / --calibrate`）一致：用标注数据夹出可行区间 —— 改写对的**最低**
+   相似度是下界（阈值须 ≤ 它才不漏改写），"相近但异义"对的**最高**相似度是上界
+   （阈值须 > 它才不误配）。脚本与数据见 `eval/run_cache_threshold_eval.py`
+   + `eval/cache_pairs.json`。取「满足零误配的最低阈值」：漏命中只是多花一次
+   LLM，误配是用户拿到**另一个问题的答案**且无从察觉，代价不对称。
+
+2. **阈值随 embedding 后端变化，换后端必须重跑标定**。余弦绝对值依赖向量空间，
+   local_hash（256 维字符哈希）与 dashscope text-embedding-v4（1024 维语义向量）
+   分布不同，同一个阈值不可通用。`find_similar` 因此带**维度守卫**：只有与查询
+   向量同维度的条目才参与比对，避免跨后端向量算出无意义的余弦后"看起来命中了"
+   （同源教训见 `VectorStore._append` 的维度守卫）。
+
+3. **精确 key 永远先查**。字面命中零成本（不调 embedding），只有精确 key 未命中
+   且语义开关打开时才计算查询向量；算出的向量会**透传给 hybrid_search 复用**
+   （见 `api/qa.py`）。因此整条链路不存在"为了探测缓存而多付一次 embedding"：
+   命中省一次 LLM，未命中也不比原来多花 embedding。
+
+4. **语义命中仍计入限流**。既有约定"缓存命中不入限流"的理由是命中不消耗上游
+   资源，精确命中确实如此；但**语义命中要算一次 embedding**，是真实的上游开销，
+   因此它不绕过限流 —— 见 `middleware.py` 中"为何语义路径不在中间件里"的说明。
+
 ## 为什么不用 `functools.lru_cache`
 
 | 能力 | `lru_cache` | `TTLRUCache` |
@@ -68,6 +105,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +117,34 @@ class _Entry:
     value: Any
     expire_at: float
     created_at: float = field(default_factory=time.monotonic)
+
+
+@dataclass(frozen=True)
+class CachedAnswer:
+    """/api/qa 的缓存条目：答案本体 + 语义匹配所需的元信息。
+
+    为什么把向量**存进条目值**，而不是另开一张 `key -> vector` 的旁路表：
+    TTLRUCache 的淘汰与过期都只作用于 `_data` 一个结构，旁路表必然会
+    在被淘汰/过期时与它失去同步（"向量还在、条目已没了"，或反之），
+    而那种不一致只会在生产上偶发，极难复现。把向量塞进条目里，
+    生命周期就只有一处，不需要任何回调来同步。
+
+    `vector is None` 表示写入时未启用语义匹配（或向量计算失败）——
+    这类条目只服务精确命中，直到被淘汰。
+    """
+
+    answer: Any
+    query: str
+    top_k: int
+    vector: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class SimilarHit:
+    """语义命中结果。"""
+
+    entry: CachedAnswer
+    similarity: float
 
 
 class TTLRUCache:
@@ -109,6 +176,10 @@ class TTLRUCache:
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
+        # 语义匹配的**独立**计数：与精确命中分开统计，否则 /health 上看不出
+        # "语义层到底救回了多少次改写问法"，也就无法判断这个阈值配得值不值。
+        self._semantic_hits = 0
+        self._semantic_lookups = 0
 
     # ---------------- 对外 API ----------------
     def get(self, key: Any) -> Any | None:
@@ -159,6 +230,8 @@ class TTLRUCache:
             self._data.clear()
             self._hits = 0
             self._misses = 0
+            self._semantic_hits = 0
+            self._semantic_lookups = 0
 
     def invalidate_all(self) -> int:
         """失效全部条目，**保留**命中率统计。返回清掉的条目数。
@@ -189,6 +262,12 @@ class TTLRUCache:
                 "hits": self._hits,
                 "misses": self._misses,
                 "hit_rate": round(self._hits / total, 4) if total else 0.0,
+                # ---- 语义匹配观测项 ----
+                # semantic_lookups：精确 key 未命中后、真正去算过向量的次数；
+                # semantic_hits：其中靠"改写问法"救回来的次数。
+                # 演示时这两个数字最能说明该功能是否在干活。
+                "semantic_lookups": self._semantic_lookups,
+                "semantic_hits": self._semantic_hits,
             }
 
     def __len__(self) -> int:
@@ -196,16 +275,147 @@ class TTLRUCache:
             return len(self._data)
 
 
+class QaSemanticCache(TTLRUCache):
+    """TTLRUCache + 「按查询向量近邻查找同 top_k 条目」的语义命中能力。
+
+    为什么用**子类**而不是改造 TTLRUCache：
+    TTLRUCache 是通用的 key→value 结构，它的契约（`set`/`get`/`invalidate_all`
+    /`stats`）有专门的测试钉住，且不假设 value 里有什么。语义匹配需要
+    "value 是 CachedAnswer 且带向量"这一额外前提，把它塞进基类会让基类的
+    契约变得含糊（`get` 到底返回 value 还是 entry？）。子类继承全部行为，
+    只新增两个方法，既有调用点与测试都不受影响。
+
+    查找复杂度：线性扫描。max_size 默认 128 条 × 1024 维点积 ≈ 13 万次乘加，
+    在 µs 量级 —— 相较于它要省掉的那次 LLM 调用（数百 ms ~ 数秒），
+    引入向量索引（FAISS）反而是过度设计。上限一旦调到千级再考虑。
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # 维度不符只告警一次：切换 embedding 后端后，缓存里会短暂留着旧维度
+        # 的向量，每次请求都打一行告警会把日志刷爆，而问题本身在 TTL 到期后自愈。
+        self._dim_mismatch_warned = False
+
+    # ---------------- 精确命中 ----------------
+    def lookup_exact(self, query: str, top_k: int) -> CachedAnswer | None:
+        """按归一化 key 精确查找。返回 None 表示未命中（含已过期）。
+
+        返回**条目**而不仅是 answer：调用方还要打日志看命中的是哪句原问法，
+        也便于后续把相似度写进响应头。非 CachedAnswer 的值（测试往同一个
+        缓存里塞的裸字符串）一律视为未命中，不做任何猜测。
+        """
+        value = self.get(cache_key(query, top_k))
+        return value if isinstance(value, CachedAnswer) else None
+
+    # ---------------- 语义命中 ----------------
+    def put_answer(
+        self,
+        query: str,
+        top_k: int,
+        answer: Any,
+        *,
+        vector: np.ndarray | None = None,
+    ) -> None:
+        """写入回答。vector 为 None 时该条目不参与后续语义匹配。
+
+        向量在此处**归一化一次**并存储：查询向量与缓存向量都已是单位向量时，
+        余弦相似度退化为点积，查找路径上就不必每条都做除法。同时把 dtype
+        固定为 float32 —— 与 embedding provider 的输出一致，避免混入
+        float64 后点积悄悄升精度、数值在不同平台上出现末位差异。
+        """
+        stored: np.ndarray | None = None
+        if vector is not None:
+            vec = np.asarray(vector, dtype=np.float32).ravel()
+            norm = float(np.linalg.norm(vec))
+            # 零向量（理论上不该出现）不能归一化，直接丢弃：
+            # 留着它会让余弦变成 0/0 或恒为 0，是"看起来在工作但永不命中"的坑。
+            if norm > 0:
+                stored = vec / norm
+        # key 由 query + top_k 决定，与精确路径完全一致 ——
+        # 两条路径必须共用同一个 key 空间，否则精确命中和语义命中的
+        # 「同一问法重复写入」判断会分叉（同一 query 存出两个条目）。
+        self.set(
+            cache_key(query, top_k),
+            CachedAnswer(answer=answer, query=query, top_k=top_k, vector=stored),
+        )
+
+    def find_similar(
+        self,
+        query: str,
+        top_k: int,
+        vector: np.ndarray | None,
+        *,
+        threshold: float,
+    ) -> SimilarHit | None:
+        """在缓存中找与查询向量最相近的同 top_k 条目。
+
+        返回最高分且 >= threshold 的那条；否则 None。`threshold <= 0` 或
+        `vector is None` 时直接返回 None（语义匹配关闭 / 本轮拿不到向量）。
+
+        **只比对 top_k 相同的条目**：top_k 影响召回条数与 citations，
+        与精确 key 的语义保持一致 —— 不然 `top_k=3` 的问法会命中
+        `top_k=5` 的答案，用户拿到的引用列表与他请求的参数不符。
+
+        同分时取**先写入**的那条（遍历顺序 = 写入顺序，用严格 `>` 比较）：
+        让命中结果与线程调度无关，测试里的断言才稳定。
+        """
+        if vector is None or threshold <= 0:
+            return None
+        q = np.asarray(vector, dtype=np.float32).ravel()
+        q_norm = float(np.linalg.norm(q))
+        if q_norm <= 0:
+            return None
+        q = q / q_norm
+        q_dim = int(q.shape[0])
+
+        best: SimilarHit | None = None
+        dim_mismatch = 0
+        now = self._wall()
+        with self._lock:
+            self._semantic_lookups += 1
+            for entry in self._data.values():
+                if entry.expire_at <= now:
+                    # 过期条目直接跳过，不在这里删除：删除会让遍历中途
+                    # 改变字典大小，也让"过期清理"有两个职责重叠的实现。
+                    # 惰性过期由 get() 负责，语义查找只需不采信它们。
+                    continue
+                cached = entry.value
+                if not isinstance(cached, CachedAnswer):
+                    continue
+                if cached.vector is None or cached.top_k != top_k:
+                    continue
+                if cached.vector.shape[0] != q_dim:
+                    dim_mismatch += 1
+                    continue
+                sim = float(np.dot(q, cached.vector))
+                if best is None or sim > best.similarity:
+                    best = SimilarHit(entry=cached, similarity=sim)
+            if best is not None and best.similarity < threshold:
+                best = None
+            if best is not None:
+                self._semantic_hits += 1
+
+        if dim_mismatch and not self._dim_mismatch_warned:
+            self._dim_mismatch_warned = True
+            logger.warning(
+                "语义缓存中有 %d 条条目与当前查询向量维度不符（查询 %d 维），已跳过比对。"
+                "通常是 EMBEDDING_PROVIDER 切换后缓存里还留着旧后端的向量；"
+                "这些条目在 TTL 到期前无法参与语义匹配（精确命中仍正常）。",
+                dim_mismatch, q_dim,
+            )
+        return best
+
+
 # --------------------------------------------------------------------------
 # 进程级单例 + key 规范化
 # --------------------------------------------------------------------------
-_cache: TTLRUCache | None = None
+_cache: QaSemanticCache | None = None
 _cache_lock = threading.Lock()
 
 
 def get_cache(
     *, max_size: int = 128, ttl_seconds: float = 300.0
-) -> TTLRUCache:
+) -> QaSemanticCache:
     """获取进程级单例。**首次调用时按参数构造**，之后参数变化被忽略。
 
     与 `get_settings()` 的 `lru_cache` 模式同理：模块级单例让 `qa.py`
@@ -215,7 +425,7 @@ def get_cache(
     global _cache
     with _cache_lock:
         if _cache is None:
-            _cache = TTLRUCache(max_size=max_size, ttl_seconds=ttl_seconds)
+            _cache = QaSemanticCache(max_size=max_size, ttl_seconds=ttl_seconds)
         return _cache
 
 
@@ -224,7 +434,7 @@ def reconfigure_cache(
     max_size: int,
     ttl_seconds: float,
     wall_fn: Callable[[], float] | None = None,
-) -> TTLRUCache:
+) -> QaSemanticCache:
     """**测试用**：丢弃旧实例，按新参数重建。
 
     生产代码不调它（配置应在启动时通过环境变量传入）；
@@ -237,7 +447,7 @@ def reconfigure_cache(
     """
     global _cache
     with _cache_lock:
-        _cache = TTLRUCache(
+        _cache = QaSemanticCache(
             max_size=max_size,
             ttl_seconds=ttl_seconds,
             wall_fn=wall_fn if wall_fn is not None else time.monotonic,
@@ -278,13 +488,25 @@ def invalidate_qa_cache(reason: str = "") -> int:
     return n
 
 
-def cache_key(query: str, top_k: int) -> tuple[str, int]:
-    """构造缓存 key。
+def normalize_query(query: str) -> str:
+    """query 的字面归一化（缓存 key 的第一段）。
 
-    - `strip()`：去首尾空白；
     - `split()` + `" ".join(...)`：把任意连续空白（含半角/全角空格、
-      Tab、换行）压成一个半角空格 —— 这是用户输入最容易踩的"看起来
-      一样但 key 不同"的坑；
+      Tab、换行）压成一个半角空格，并顺带去掉首尾空白 —— 这是用户输入
+      最容易踩的"看起来一样但 key 不同"的坑；
     - `lower()`：英文/数字大小写归一化；中文是 noop。
+
+    单独成函数（而不是内联在 cache_key 里）是为了给标定脚本复用：
+    eval/run_cache_threshold_eval.py 要统计「有多少对改写样本**字面**就能命中」，
+    以此量化语义层的增量价值 —— 那份统计必须用与生产完全相同的归一化口径，
+    否则算出来的增量是假的。
     """
-    return (" ".join(query.split()).strip().lower(), int(top_k))
+    return " ".join(query.split()).strip().lower()
+
+
+def cache_key(query: str, top_k: int) -> tuple[str, int]:
+    """构造缓存 key = (归一化 query, top_k)。
+
+    top_k 进 key 的原因：它影响召回条数与 citations，结果本就不同。
+    """
+    return (normalize_query(query), int(top_k))

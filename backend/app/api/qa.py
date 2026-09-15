@@ -16,12 +16,32 @@
 key = (normalize(query), top_k)；TTL 与 max_size 可通过 .env 配置；
 关闭缓存只需 `QA_CACHE_ENABLED=false`。
 详见 services/qa_cache.py 模块 docstring。
+
+### 两段式查找（精确 → 语义）
+
+1. **精确 key**（`lookup_exact`）：字面归一化后命中，零成本，**不调 embedding**。
+2. **语义近邻**（`find_similar`）：精确未命中且 `QA_CACHE_SEMANTIC_THRESHOLD > 0`
+   时，计算查询向量并与缓存中同 `top_k` 条目的 query 向量比余弦相似度，
+   `>= 阈值` 即判定命中。阈值经实测定标（见 config.py 的注释与
+   `eval/run_cache_threshold_eval.py`）。
+
+**为何语义命中不在中间件里做**（精确命中在 QaCacheMiddleware 里，见 middleware.py）：
+   · 中间件是 async 的，而 embedding 是阻塞调用，在事件循环里发网络请求会卡住
+     整个进程的其他请求。同步端点跑在线程池，天然适合做这件事。
+   · 语义命中**消耗一次 embedding**（上游资源），按既有约定"限流是上游护栏"
+     就应当照常计入限流；而精确命中零上游开销，才该绕过限流。两段分开处理，
+     正好各自符合自己的成本语义。
+
+**为何命中也要重置 cache_hit**：缓存里存的值 `cache_hit=False`（写缓存前显式重置），
+命中时用 `model_copy(update=...)` 复制一份标 True —— 缓存中那份必须保持 False。
+另加 `X-Cache` / `X-Cache-Similarity` 响应头，演示与排障时能直接看出走的是哪条路径。
 """
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+import numpy as np
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -41,7 +61,7 @@ from ..services.notice_text import (
     SNIPPET_MAX_CHARS,
     resolve_notice_texts,
 )
-from ..services.qa_cache import cache_key, get_cache
+from ..services.qa_cache import get_cache
 from ..services.snippet import select_context, select_snippet
 from ..services.vector_store import get_store
 
@@ -76,17 +96,44 @@ def _build_llm_client() -> OpenAICompatClient:
     return build_client_from_settings()
 
 
-def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
+def _probe_vector(query: str) -> np.ndarray | None:
+    """计算用于**语义缓存比对**的查询向量；失败返回 None。
+
+    失败必须降级而不是抛出：缓存是优化，不是主流程的前提。
+    `DashScopeEmbedding` 内部已有粘性降级（上游故障 → 本地哈希），所以这里
+    兜住的是更外层/更罕见的异常。返回 None 的语义是"本次跳过语义匹配"，
+    精确 key 仍然照常工作，检索层也会自行计算向量（并走它自己的降级）。
+
+    **嵌入的是原始 query，而不是归一化之后的文本**（刻意的）：
+    · 归一化只影响首尾/连续空白与英文大小写，这类变体本来就由精确 key 路径
+      （零成本）捕获，永远走不到这里，所以不归一化不会造成功能缺口；
+    · 更关键的是，这个向量会透传给 `hybrid_search` 用于检索。改造前检索嵌的
+      就是原始 query —— 保持一致才能保证**检索结果一字不变**。若改成嵌归一化
+      文本，等于顺手改了检索输入，是需要单独评测的行为变更。
+    """
+    try:
+        return get_store().embed(query)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("查询向量计算失败，本次跳过语义缓存比对：%s", exc)
+        return None
+
+
+def _build_answer(
+    payload: QAIn, db: Session, *, query_vector: np.ndarray | None = None
+) -> AnswerOut:
     """构造 AnswerOut 的全部业务逻辑：检索 → 生成/降级。
 
     拆出内部函数的原因：让 `ask()` 入口的「查缓存 → 走业务 → 写缓存」
     三步结构清晰可见，业务逻辑本身不再关心缓存细节。
     单元测试也可以直接喂 QAIn 来验证。
+
+    `query_vector`：由 `ask()` 在语义缓存探测时算出的向量，透传给检索层复用，
+    避免同一请求算两遍（详见 hybrid_search 的说明）。
     """
     store = get_store()
     # 混合检索（向量 + BM25 加权融合）：问答的召回质量直接决定回答质量，
     # 精确串（课程名/房间号/手机号）靠 BM25 兜住，语义相近靠向量兜住。
-    hits = hybrid_search(payload.query, payload.top_k)
+    hits = hybrid_search(payload.query, payload.top_k, query_vector=query_vector)
 
     # 批量取通知与文本：逐条 db.get 是 N+1（top_k=5 时 ~10 次查询），
     # 批量后固定 2 次；snippet/context 的选片逻辑不变（select_snippet/context 纯函数）。
@@ -189,28 +236,59 @@ def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
 
 
 @router.post("", response_model=AnswerOut, summary="检索增强问答（RAG）：答案 + 引用片段")
-def ask(payload: QAIn, db: Session = Depends(get_db)) -> AnswerOut:
-    """缓存 → 业务 → 回写 三段式。
+def ask(
+    payload: QAIn, response: Response, db: Session = Depends(get_db)
+) -> AnswerOut:
+    """精确命中 → 语义命中 → 业务 → 回写，四段式。
 
     **为什么缓存命中要 `model_copy(update={"cache_hit": True})`**：
     Pydantic 对象是 immutable-friendly，缓存里的值是 cache_hit=False 的副本
     （写缓存前已显式重置），命中时再复制一份标 True。前端 / 调用方只看
     cache_hit 字段就能判断本次是否真正调用了 LLM，便于演示时可见化。
+
+    **为什么精确命中要放在最前面**：它是零成本的（不碰 embedding）。
+    即使语义匹配开着，同一问法重复提问也应该走这条最快路径，
+    而不是先去算一次向量。
     """
-    # ---- 缓存读：命中直接返回，不再发起 LLM/embedding ----
-    if settings.qa_cache_enabled:
-        key = cache_key(payload.query, payload.top_k)
-        cached = get_cache().get(key)
-        if cached is not None:
-            # 深拷贝：避免外部修改 cache_hit 影响后续命中（缓存里应保持 False）
-            return cached.model_copy(update={"cache_hit": True})
+    cache = get_cache()
+    threshold = float(settings.qa_cache_semantic_threshold or 0.0)
+    query_vector: np.ndarray | None = None
 
-    # ---- 业务：检索 + 生成/降级 ----
-    answer = _build_answer(payload, db)
-
-    # ---- 缓存写：把 cache_hit 重置为 False 再存；下次命中时再标 True ----
     if settings.qa_cache_enabled:
-        answer_to_cache = answer.model_copy(update={"cache_hit": False})
-        get_cache().set(key, answer_to_cache)
+        # ---- 1. 精确 key：命中即返回，不发起 embedding / LLM ----
+        exact = cache.lookup_exact(payload.query, payload.top_k)
+        if exact is not None:
+            response.headers["X-Cache"] = "HIT"
+            return exact.answer.model_copy(update={"cache_hit": True})
+
+        # ---- 2. 语义近邻：改写问法复用上次结果 ----
+        # 只有精确未命中且开关打开时才算向量 —— 关闭时零额外开销。
+        if threshold > 0:
+            query_vector = _probe_vector(payload.query)
+            similar = cache.find_similar(
+                payload.query, payload.top_k, query_vector, threshold=threshold
+            )
+            if similar is not None:
+                response.headers["X-Cache"] = "HIT_SEMANTIC"
+                response.headers["X-Cache-Similarity"] = f"{similar.similarity:.4f}"
+                # 打 INFO 而不是 DEBUG：这是"花了更少钱办了同一件事"的证据，
+                # 演示时能从日志直接读出省下了哪次改写问法的 LLM 调用。
+                logger.info(
+                    "语义缓存命中 | 相似度=%.4f | 本次「%s」复用「%s」的答案",
+                    similar.similarity, payload.query, similar.entry.query,
+                )
+                return similar.entry.answer.model_copy(update={"cache_hit": True})
+
+    # ---- 3. 业务：检索 + 生成/降级（复用上面算过的向量，不重复调用 embedding）----
+    answer = _build_answer(payload, db, query_vector=query_vector)
+
+    # ---- 4. 缓存写：把 cache_hit 重置为 False 再存；下次命中时再标 True ----
+    if settings.qa_cache_enabled:
+        cache.put_answer(
+            payload.query,
+            payload.top_k,
+            answer.model_copy(update={"cache_hit": False}),
+            vector=query_vector,
+        )
 
     return answer

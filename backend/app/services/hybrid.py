@@ -74,6 +74,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+import numpy as np
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -231,11 +232,21 @@ def fuse(
     return hits
 
 
-def hybrid_search(query: str, top_k: int | None = None) -> list[RetrievalHit]:
+def hybrid_search(
+    query: str,
+    top_k: int | None = None,
+    *,
+    query_vector: np.ndarray | None = None,
+) -> list[RetrievalHit]:
     """混合检索入口。
 
     候选池取 `hybrid_fetch_k` 而不是 `top_k` —— 融合前多召回一些，
     才有机会让"向量排 12 但 BM25 排 2"的文档被正确顶上来。
+
+    `query_vector`：调用方已经算过查询向量时传进来**复用**，避免同一请求
+    重复调用 embedding。目前唯一的生产调用方是 `/api/qa` —— 它为语义缓存
+    探测算过一次向量，若不复用就要再算一次（白花一次上游调用）。
+    不传则本函数自己算，行为与改造前完全一致。
 
     降级保证（任一环节不可用都不影响问答主流程）：
     - `hybrid_enabled=False` → 退回纯向量（与改造前行为一致，可随时回滚）；
@@ -249,7 +260,9 @@ def hybrid_search(query: str, top_k: int | None = None) -> list[RetrievalHit]:
     # 向量路：复用现有检索，不另起一套
     vector_ranked: list[tuple[int, float]] = []
     try:
-        vector_ranked = store.search_vector(store.embed(query), fetch_k)
+        vector_ranked = store.search_vector(
+            query_vector if query_vector is not None else store.embed(query), fetch_k
+        )
     except Exception as exc:  # noqa: BLE001
         # embedding 上游故障时仍应能靠关键词兜住检索
         logger.warning("向量检索失败，本次仅用 BM25：%s", exc)

@@ -151,6 +151,19 @@ async def lifespan(app: Any):
         get_store().embedder.active_name,
         "（已降级）" if get_store().embedder.degraded else "",
     )
+    # 语义缓存的**诚实性提示**：阈值是按 dashscope（1024 维语义向量）标定的，
+    # 在 local_hash（256 维字符哈希）上实测复用率与字面归一化持平（1/10），
+    # 等于开了个不干活的开关。不提示的话，看到"功能已开启"却毫无效果的人
+    # 只会以为是自己的问法不对。
+    if settings.qa_cache_enabled and settings.qa_cache_semantic_threshold > 0:
+        active_embedding = get_store().embedder.active_name
+        if active_embedding == "local_hash":
+            logger.warning(
+                "缓存语义匹配已启用（阈值 %.2f），但当前 embedding 后端是 %s："
+                "它是字符哈希而非语义模型，实测对改写问法的复用率与字面归一化持平"
+                "（1/10），本功能基本不会生效。配置 embedding Key 切到 dashscope 后才有实际收益。",
+                settings.qa_cache_semantic_threshold, active_embedding,
+            )
     yield
     # 关停：释放限流计数器（当前实现无后台线程，等价空操作，保留以兼容
     # 未来的批量刷盘实现），并释放共享连接池，避免 uvicorn --reload
@@ -202,6 +215,9 @@ def health() -> dict:
     cache_info: dict = {"enabled": settings.qa_cache_enabled}
     if settings.qa_cache_enabled:
         cache_info.update(get_cache().stats())
+        # 语义阈值一并暴露：stats 里的 semantic_hits 只有在知道阈值时才有意义
+        # （阈值配得过高，命中数自然为 0）。
+        cache_info["semantic_threshold"] = settings.qa_cache_semantic_threshold
     return {
         "status": "ok",
         "app": settings.app_name,
