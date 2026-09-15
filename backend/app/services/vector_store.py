@@ -152,7 +152,22 @@ class VectorStore:
         这是维度/后端变更后的唯一恢复路径：把库里混杂的历史向量统一成
         当前后端的维度，使索引与查询向量重新可比。
         代价是每个通知一次 embedding 调用（本项目量级下可忽略）。
+
+        **降级态拒绝执行**：embedder 粘性降级（如 dashscope 抖动 → local_hash）
+        时，降级是「上游暂时不可用」而非「后端切换」。此时若照常重算，
+        会用 256 维的降级向量**覆盖**库里全部 1024 维历史向量 ——
+        等上游恢复、进程重启后，查询向量与库内向量不可比，检索静默返回 0 条，
+        且没有任何报错。因此降级态下直接拒绝（返回 0），只告警；
+        上游恢复后重启服务，load_from_db 即可正常加载历史向量。
         """
+        if self._embedder.degraded:
+            logger.warning(
+                "当前 embedding 处于降级态（%s，维度 %d），拒绝 reindex："
+                "用降级向量覆盖历史向量会污染数据库。"
+                "上游恢复后重启服务即可自动恢复检索。",
+                self._embedder.active_name, self._embedder.dim,
+            )
+            return 0
         notices = db.execute(select(Notice).order_by(Notice.id)).scalars().all()
         with self._lock:  # 先清空，让新后端重新决定索引维度
             self._ids, self._matrix, self._index, self._dim = [], None, None, None

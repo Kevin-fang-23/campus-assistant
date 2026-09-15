@@ -113,12 +113,24 @@ async def lifespan(app: Any):
         store.load_from_db(db)
         # 库内向量与当前后端维度不符（provider 切换或运行时回退的历史遗留）时
         # 自动重算：否则索引与查询向量不可比，检索会静默返回 0 条。
+        # 例外：当前后端处于**降级态**（上游抖动 → 粘性回退）时拒绝重算 ——
+        # 降级不是后端切换，用降级向量覆盖历史向量会污染数据库（详见
+        # VectorStore.reindex 的守卫）。reindex() 内部有同样守卫，这里
+        # 提前判断只是为了让启动日志如实说明"跳过"而非"重建"。
         if store.skipped_mismatched and settings.reindex_on_dim_mismatch:
-            logger.warning(
-                "检测到 %d 条历史向量与当前后端维度不符，自动重建全部向量…",
-                store.skipped_mismatched,
-            )
-            store.reindex(db)
+            if store.embedder.degraded:
+                logger.warning(
+                    "检测到 %d 条历史向量与当前后端维度不符，但当前后端处于降级态"
+                    "（%s）——跳过自动重建，避免用降级向量覆盖历史向量。"
+                    "上游恢复后重启服务即可恢复。",
+                    store.skipped_mismatched, store.embedder.active_name,
+                )
+            else:
+                logger.warning(
+                    "检测到 %d 条历史向量与当前后端维度不符，自动重建全部向量…",
+                    store.skipped_mismatched,
+                )
+                store.reindex(db)
         # BM25 索引：与向量索引用同一份文本、同一批通知，启动时一次性构建
         rebuild_bm25(db)
     logger.info(

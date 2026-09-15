@@ -232,6 +232,45 @@ def test_reindex_heals_dimension_mismatch(isolated_db) -> None:
     assert hits, "reindex 后检索必须可用"
 
 
+def test_reindex_refuses_when_degraded(isolated_db, caplog) -> None:
+    """降级态下 reindex 必须拒绝执行，不得用降级向量覆盖历史向量。
+
+    背景（真实风险）：dashscope 抖动 → 粘性降级到 local_hash（1024→256 维），
+    此时启动自动 reindex 若照常执行，会用 256 维降级向量**覆盖**库里全部
+    1024 维历史向量；等上游恢复、进程重启后，查询向量与库内向量不可比，
+    检索静默返回 0 条且无报错。降级是「暂时不可用」而非「后端切换」，
+    reindex 必须拒绝并只告警。
+    """
+    import logging
+
+    notice = _make_notice(isolated_db, "degrade_probe.txt", "降级探针通知")
+    _put_embedding(isolated_db, notice.id, dim=16, provider="stub")
+
+    degraded = _StubEmbedder(dim=8)
+    degraded._degraded = True  # 模拟粘性降级（维度 16 → 8）
+    store = VectorStore(embedder=degraded)  # type: ignore[arg-type]
+    store.load_from_db(isolated_db)
+    assert store.skipped_mismatched == 1, "前置条件：历史向量应因维度不符被跳过"
+
+    with caplog.at_level(logging.WARNING, logger="app.services.vector_store"):
+        n = store.reindex(isolated_db)
+
+    assert n == 0, "降级态 reindex 应拒绝执行并返回 0"
+    # 历史向量不得被覆盖：库里仍是 16 维、provider 不变
+    from app.models import NoticeEmbedding
+
+    row = (
+        isolated_db.query(NoticeEmbedding)
+        .filter(NoticeEmbedding.notice_id == notice.id)
+        .one()
+    )
+    assert row.dim == 16, "历史向量被降级向量覆盖了"
+    assert row.provider == "stub"
+    assert any("拒绝 reindex" in r.message for r in caplog.records), (
+        f"应留下可诊断的告警，实际日志: {[r.message for r in caplog.records]}"
+    )
+
+
 def test_search_warns_and_returns_empty_on_dim_mismatch(caplog) -> None:
     """查询维度与索引不符时应返回空**并留下告警**，不能静默。"""
     import logging

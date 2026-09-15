@@ -49,6 +49,35 @@ def test_upload_file_and_dedup(client: TestClient) -> None:
     assert second.json()["duplicate"] is True
 
 
+def test_upload_internal_error_does_not_leak_details(client: TestClient, monkeypatch) -> None:
+    """500 响应不得把原始异常文本返回给调用方（可能含路径/SQL 片段）。
+
+    背景：documents.py 曾把 `f"处理失败：{exc}"` 直接作为 detail 返回，
+    公网部署时等于把栈内信息泄露给任意访问者。修复后对外只给固定文案，
+    完整异常仅进日志。
+    """
+    from app.api import documents as documents_api
+
+    secret = "C:\\secret\\path.sql UNIQUE constraint failed: notices.id"
+
+    def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(documents_api, "ingest_bytes", _boom)
+    files = {"file": ("leak.txt", io.BytesIO(b"whatever"), "text/plain")}
+    resp = client.post("/api/documents/upload", files=files)
+    assert resp.status_code == 500
+    assert secret not in resp.text, "内部异常文本泄露给了调用方"
+    assert resp.json()["detail"] == "处理失败，请稍后重试或联系管理员"
+
+    # /text 路径同样脱敏
+    monkeypatch.setattr(documents_api, "ingest_text", _boom)
+    resp = client.post("/api/documents/text", json={"content": "x"})
+    assert resp.status_code == 500
+    assert secret not in resp.text
+    assert resp.json()["detail"] == "处理失败，请稍后重试或联系管理员"
+
+
 def test_task_status_flow_and_timeline(client: TestClient) -> None:
     tasks = client.get("/api/tasks", params={"category": "homework"}).json()
     assert tasks

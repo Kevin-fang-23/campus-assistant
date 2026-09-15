@@ -25,7 +25,9 @@ async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)) ->
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.exception("处理上传文件失败")
-        raise HTTPException(status_code=500, detail=f"处理失败：{exc}") from exc
+        # 对外只给固定文案：原始异常文本可能含文件路径 / SQL 片段等内部信息，
+        # 公网部署时不应返回给任意访问者；完整异常已由上面的日志记录。
+        raise HTTPException(status_code=500, detail="处理失败，请稍后重试或联系管理员") from exc
 
 
 @router.post("/text", response_model=IngestResult, summary="直接粘贴文本处理")
@@ -37,7 +39,7 @@ def upload_text(payload: TextIngestIn, db: Session = Depends(get_db)) -> IngestR
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.exception("处理文本失败")
-        raise HTTPException(status_code=500, detail=f"处理失败：{exc}") from exc
+        raise HTTPException(status_code=500, detail="处理失败，请稍后重试或联系管理员") from exc
 
 
 @router.get("", response_model=list[DocumentOut], summary="文档列表")
