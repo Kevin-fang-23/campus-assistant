@@ -53,7 +53,7 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 | **LLM 连接复用** | 20 次问答的 TCP 建连数 **21 → 1**（降约 95%） | `pytest tests/test_llm_client_reuse.py`（起真实本地服务器统计 TCP 连接数） |
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
 | **限流计数持久化** | 日计数写 SQLite（WAL，**88.8µs/请求**）：4 个真实子进程共享额度 40 实测**每次恰好放行 40 次**、重启不清零 | `pytest tests/test_rate_limit_persistence.py` |
-| **检索与评测** | 后端 **334 passed**；检索质量门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **检索与评测** | 后端 **335 passed**；检索质量门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
 | **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
 
 ---
@@ -139,7 +139,7 @@ campus-assistant/
 │   │   ├── db.py                 # 引擎 / Session
 │   │   ├── main.py               # 应用入口 + CORS + 限流 + /health + 静态托管
 │   │   └── seed.py               # 5 条演示数据（4 类 + 1 条近似重复）
-│   ├── tests/                    # 14 个测试模块 / 334 条用例
+│   ├── tests/                    # 14 个测试模块 / 335 条用例
 │   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 阈值标定 + 门禁基线）
 │   ├── requirements.txt          # 全部依赖（含可选 OCR/DB 引擎）
 │   ├── requirements-ci.txt       # CI 依赖（核心 + 生产路径，不含 OCR 栈）
@@ -481,7 +481,7 @@ cd campus-assistant/backend
 pytest -q
 ```
 
-当前 **334 passed**（14 个测试模块 + `conftest.py`）。
+当前 **335 passed**（14 个测试模块 + `conftest.py`）。
 
 > **测试完全不需要 API Key，也不访问外网**：`conftest.py` 已把 VLM / QA 固定为 mock、
 > OCR 固定为 stub，embedding 在无 Key 时自动回退本地哈希。因此可直接在 CI 中运行。
@@ -504,7 +504,7 @@ pytest -q
 | `test_qa_degradation.py` | 问答降级路径 |
 | `test_qa_cache.py` | 问答缓存：命中跳过 LLM、TTL 过期、LRU 淘汰、知识库变更后失效、命中不消耗限流额度、超大请求体 413 护栏、**命中路径与 response_model 的结构契约** |
 | `test_embedding_backend_truth.py` | 配置后端 vs 实际生效后端的一致性、**降级态拒绝 reindex**（防降级向量覆盖历史向量） |
-| `test_retrieval_set.py` | 检索评测集完整性（规模下限、id 唯一、expected 引用可解析、两路文本分离） |
+| `test_retrieval_set.py` | 检索评测集完整性（规模下限、id 唯一、expected 引用可解析、两路文本分离、**噪声样本量下限与分层齐备**） |
 | `test_eval_gate.py` | 检索质量门禁：劣化必须被拦、改进不得失败、容差边界、基线文件形态 |
 
 ### 前端
@@ -600,10 +600,11 @@ docker compose up --build
   且多台机器部署时 SQLite 文件无法共享 —— 那两种情况需换 Redis。
 - 检索评测语料 **55 条 / 129 条查询**，实测结论是**本语料上纯 BM25 最强、向量路未带来增益**；
   语料扩大后 BM25 的字面碰撞会增多、向量路相对价值上升，届时应重跑 `--sweep` 重新定标。
-- **相关性阈值只在 2 条噪声查询上验证过，样本极小**：阈值判据是「共享二字词个数 ≥ 1」，
-  「真实查询误杀 0/129」这个数字可靠，但「能拦掉多少真实噪声」远未被充分验证 ——
-  已知「量子纠缠退相干周期」会漏放（它与 #52 真的共享二字词「周期」）。
-  要评估需先扩一批真实无答案查询进评测集。详见 `eval/RETRIEVAL_BASELINE.md` 第五节。
+- **相关性阈值的拦截能力有明确边界**（噪声样本已扩到 30 条实测）：判据是「共享二字词个数 ≥ 1」，
+  真实查询误杀 **0/129**；噪声拦截 **8/30** —— 校外话题拦下大部分（6/10），
+  但「校园相关而语料无答案」类基本拦不住（2/20，如「期末成绩什么时候出来」撞通用词「期末」）。
+  提阈值不划算（T=2 误杀 9 条、T=3 误杀 24 条），校园类噪声需语义级判定，已列为后续方向。
+  详见 `eval/RETRIEVAL_BASELINE.md` 第五节。
 - **检索质量门禁的容差是 0.005**，基线用确定性的 `local_hash` 向量记录。
   换 embedding 后端或调权重后指标必然变化，那不算劣化，需人工确认后 `--update-baseline`。
 - Mock VLM 为规则实现，对排版规整的正式通知效果最好；复杂海报建议接入真实视觉大模型。

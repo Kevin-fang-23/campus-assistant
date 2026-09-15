@@ -103,3 +103,24 @@ def test_noise_cases_are_marked_with_sentinel(data: dict) -> None:
         assert NOISE_ID in case["expected"], (
             f"噪声查询 {case['query']!r} 应显式标注哨兵 id {NOISE_ID}"
         )
+
+
+def test_noise_sample_has_minimum_scale_and_both_categories(data: dict) -> None:
+    """噪声样本量下限 + 两类分层标签齐备（防退回小样本）。
+
+    背景：阈值的拦截结论曾建立在仅 2 条噪声样本上，扩到 30 条后才发现
+    真实拦截率远低于预期（校外 6/10、校园无答案 2/20）。没有量下限，
+    后续维护中删减噪声样本会让「阈值能拦多少噪声」的结论再次失去统计意义。
+
+    两类分层缺一不可：
+      · 校外话题 —— 阈值对它有效（拦下大部分），是 T=1 的价值所在；
+      · 校园无答案 —— 最难拦的一类（共享通用校园词汇），是已知边界的证据。
+    """
+    ids = {c["id"] for c in data["corpus"]}
+    noise = [c for c in data["cases"] if not (set(c["expected"]) & ids)]
+    assert len(noise) >= 20, (
+        f"噪声样本仅 {len(noise)} 条，阈值拦截结论的统计意义不足（应 ≥ 20）"
+    )
+    tags = {t for c in noise for t in c.get("tags", [])}
+    for required in ("校外话题", "校园无答案"):
+        assert required in tags, f"噪声样本缺「{required}」分层 —— 两类的拦截难度完全不同"

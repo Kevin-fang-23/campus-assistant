@@ -41,8 +41,8 @@ sys.path.insert(0, str(_HERE.parent))
 
 from app.config import settings  # noqa: E402
 from app.providers.embedding import get_embedding  # noqa: E402
-from app.services.bm25 import BM25Index  # noqa: E402
-from app.services.hybrid import fuse  # noqa: E402
+from app.services.bm25 import BM25Index, tokenize  # noqa: E402
+from app.services.hybrid import fuse, shared_term_count  # noqa: E402
 from app.services.snippet import score_sentence, split_sentences  # noqa: E402
 from app.services.vector_store import VectorStore  # noqa: E402
 
@@ -360,6 +360,138 @@ def calibrate(
 
 
 # ---------------------------------------------------------------------------
+# 相关性阈值的拦截评估：噪声查询能拦下多少、真实查询误杀多少
+# ---------------------------------------------------------------------------
+def _shared_terms(query: str, text: str) -> set[str]:
+    """查询与文档共享的「二字及以上词」集合（仅用于**展示**漏放原因）。
+
+    定义与 hybrid._meaningful_terms 一致；计数口径一律用生产的
+    `shared_term_count`，本函数只负责把「撞上了哪个词」打印出来。
+    """
+    return {t for t in tokenize(query) if len(t) >= 2} & {
+        t for t in tokenize(text) if len(t) >= 2
+    }
+
+
+def threshold_report(
+    harness: "Harness",
+    cases: list[dict],
+    noise_cases: list[dict],
+    *,
+    w_vector: float,
+    w_bm25: float,
+    top_k: int = 5,
+) -> dict:
+    """用**生产同款判据**评估 `SEARCH_MIN_BIGRAM_OVERLAP` 的实际拦截效果。
+
+    生产判定（hybrid.filter_by_relevance）：候选与查询共享的二字词
+    个数 ≥ T 才保留，全部被丢弃时前端展示「未找到相关内容」。
+    两类指标互为代价 —— T 越高拦得越狠，但真实答案也越容易被误杀：
+
+      · 噪声拦截：噪声查询的 top-k 候选**全部**低于 T → 正确提示无结果；
+        任一候选 ≥ T → 漏放（用户看到一堆无关通知，像在胡答）。
+      · 真实误杀：正确答案在 top-k 内、但**全部**低于 T →
+        库里明明有答案却提示「未找到」。
+
+    判定文本用 bm25_text（结构化 + 正文），与生产 search_docs_text 一致。
+    """
+    t_current = settings.search_min_bigram_overlap
+
+    # 噪声查询：每个 top-k 候选的共享词计数
+    noise_rows: list[dict] = []
+    for case in noise_cases:
+        hits = harness.ranked_hits(
+            case["query"], w_vector=w_vector, w_bm25=w_bm25
+        )[:top_k]
+        noise_rows.append(
+            {
+                "query": case["query"],
+                "tags": [t for t in case.get("tags", []) if t not in ("噪声", "无答案")],
+                # (notice_id, count, 共享词集合)：词集合用于诊断「为什么漏放」
+                "cands": [
+                    (
+                        h.notice_id,
+                        shared_term_count(
+                            case["query"], bm25_text(harness.docs[h.notice_id])
+                        ),
+                        _shared_terms(case["query"], bm25_text(harness.docs[h.notice_id])),
+                    )
+                    for h in hits
+                ],
+            }
+        )
+
+    # 真实查询：top-k 内正确答案的共享词计数（召回失败的不参与，
+    # 它们的失败与阈值无关 —— 阈值救不回本来就没召回的查询）
+    hit_counts: list[list[int]] = []
+    for case in cases:
+        expected = set(case["expected"])
+        hits = harness.ranked_hits(
+            case["query"], w_vector=w_vector, w_bm25=w_bm25
+        )[:top_k]
+        correct = [h for h in hits if h.notice_id in expected]
+        if not correct:
+            continue
+        hit_counts.append(
+            [
+                shared_term_count(case["query"], bm25_text(harness.docs[h.notice_id]))
+                for h in correct
+            ]
+        )
+
+    def noise_intercepted(row: dict, t: int) -> bool:
+        # 全部候选都低于阈值 → 结果被清空 → 正确拦截
+        return bool(row["cands"]) and all(c < t for _, c, _ in row["cands"])
+
+    def real_killed(counts: list[int], t: int) -> bool:
+        # top-k 内的正确答案全部低于阈值 → 有答案却提示「未找到」
+        return all(c < t for c in counts)
+
+    # ---- 当前阈值的逐条报告 ----
+    print(f"\n  阈值判定（T = SEARCH_MIN_BIGRAM_OVERLAP = {t_current}，生产同款判据）：")
+    blocked = [r for r in noise_rows if noise_intercepted(r, t_current)]
+    leaked = [r for r in noise_rows if not noise_intercepted(r, t_current)]
+    print(f"    ✓ 已拦截（前端将显示「未找到相关内容」）: {len(blocked)}/{len(noise_rows)}")
+    print(f"    ✗ 漏放（仍会返回无关结果）: {len(leaked)}/{len(noise_rows)}")
+    for row in leaked:
+        print(f"      · {row['query']}")
+        for nid, count, terms in row["cands"]:
+            if count >= t_current:
+                doc_title = (harness.docs[nid].get("title") or "?")[:30]
+                print(f"          ↳ #{nid} {doc_title} 共享 {sorted(terms)}")
+
+    # 分层统计：校园无答案类比校外话题更难拦（词汇天然与语料重叠）
+    by_tag: dict[str, list[dict]] = {}
+    for row in noise_rows:
+        for tag in row["tags"] or ["未分类"]:
+            by_tag.setdefault(tag, []).append(row)
+    if len(by_tag) > 1:
+        print("    分层（校园话题与语料天然共享词汇，是最难拦的一类）：")
+        for tag, rows in sorted(by_tag.items()):
+            n_hit = sum(1 for r in rows if noise_intercepted(r, t_current))
+            print(f"      · {tag}: 拦截 {n_hit}/{len(rows)}")
+
+    # ---- 阈值权衡扫描：拦得更多 vs 误杀更多 ----
+    print("\n    阈值权衡扫描（两列互为代价，⭐ 为当前配置）：")
+    print(f"      {'T':>3} | {'噪声拦截':>10} | {'真实误杀':>10}")
+    for t in (1, 2, 3):
+        n_block = sum(1 for r in noise_rows if noise_intercepted(r, t))
+        n_kill = sum(1 for counts in hit_counts if real_killed(counts, t))
+        marker = "  ⭐" if t == t_current else ""
+        print(
+            f"      {t:>3} | {n_block:>6}/{len(noise_rows):<3} | "
+            f"{n_kill:>6}/{len(hit_counts):<3}{marker}"
+        )
+
+    return {
+        "blocked": len(blocked),
+        "leaked": len(leaked),
+        "total_noise": len(noise_rows),
+        "real_total": len(hit_counts),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 质量门禁（#7）：把指标与基线比对，劣化即 fail
 # ---------------------------------------------------------------------------
 # 门禁要回答的问题只有一个：**这次改动有没有让检索变差**。
@@ -527,23 +659,18 @@ def main() -> int:
     for q in broken:
         print(f"      ⚠ {q}")
 
-    # 「无答案」查询：验证相关性阈值能否拦住它们
+    # 「无答案」查询：验证相关性阈值能否拦住它们（生产同款判据）
     if noise_cases:
         print("\n" + "-" * 78)
-        print("无答案查询（语料里本就没有相关内容）")
+        print(f"无答案查询（语料里本就没有相关内容，共 {len(noise_cases)} 条）")
         print("-" * 78)
-        for case in noise_cases:
-            ranked = harness.ranked(
-                case["query"], "hybrid", w_vector=default_wv, w_bm25=default_wb
-            )[:3]
-            print(f"  · {case['query']}")
-            for nid in ranked:
-                doc = harness.docs.get(nid, {})
-                print(f"      → #{nid} {(doc.get('title') or '?')[:36]}")
+        threshold_report(
+            harness, cases, noise_cases, w_vector=default_wv, w_bm25=default_wb,
+            top_k=args.top_k,
+        )
         print("  说明：检索本身恒返回 top-k；是否提示「未找到相关内容」由")
-        print("       `SEARCH_MIN_BIGRAM_OVERLAP` 阈值决定（见 --calibrate 与")
-        print("       app/services/hybrid.py::filter_by_relevance）。")
-        print("       上表是**未过阈值**的原始召回，用于观察阈值要拦掉什么。")
+        print("       `SEARCH_MIN_BIGRAM_OVERLAP` 阈值决定（判定见")
+        print("       app/services/hybrid.py::filter_by_relevance，标定见 --calibrate）。")
 
     if args.calibrate:
         cal = calibrate(
