@@ -140,7 +140,8 @@ def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
     # ---- LLM 生成路径：有 Key 且未被 QA_PROVIDER=mock 强制降级 ----
     if settings.dashscope_api_key and settings.qa_provider != "mock":
         context = "\n".join(
-            f"[{i}] {c.title}\n{src}" for i, (c, src) in enumerate(zip(citations, sources), 1)
+            f"[{i}] {c.title}\n{src}"
+            for i, (c, src) in enumerate(zip(citations, sources, strict=True), 1)
         )
         try:
             # 刻意**不用** `with`：客户端由进程共享（连接复用），
@@ -172,7 +173,7 @@ def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
             )
         except LLMError as exc:
             logger.warning("QA 生成失败，降级为抽取式回答：%s", exc)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # 生成阶段的任何意外（含未预料的第三方异常）都不应让用户拿到 500：
             # /api/qa 的检索结果本身有效，降级为抽取式回答仍可用。
             logger.exception("QA 生成出现未预期异常，降级为抽取式回答：%s", exc)

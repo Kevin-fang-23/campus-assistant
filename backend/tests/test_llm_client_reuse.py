@@ -65,7 +65,7 @@ class _MockLLMServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 outer.requests += 1
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b"{}"
@@ -247,7 +247,7 @@ def test_server_error_degrades_without_rebuilding_client(wired, monkeypatch) -> 
     降级发生在客户端**内部**（重试耗尽 → 抛 LLMError → 路由层兜底），
     连接池本身无需重建；若这里连接数暴涨，说明降级路径泄漏了客户端。
     """
-    def failing_chat(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    def failing_chat(self, *args, **kwargs):
         raise llm.ServerError("模拟上游 503", 503)
 
     monkeypatch.setattr(OpenAICompatClient, "chat", failing_chat)

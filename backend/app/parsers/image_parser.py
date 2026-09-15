@@ -12,7 +12,7 @@ def parse(data: bytes, filename: str = "input.png", mime: str = "image/png") -> 
     ocr = get_ocr()
     try:
         text, meta = ocr.image_to_text(data, mime=mime)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("OCR 失败: %s", filename)
         return ParsedDoc(
             kind="image",

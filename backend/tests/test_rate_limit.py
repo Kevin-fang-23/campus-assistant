@@ -173,11 +173,11 @@ def test_release_failure_is_logged_not_raised(monkeypatch, caplog) -> None:
     def boom(_day: str, _key: str) -> None:
         raise RuntimeError("simulated store failure")
 
-    monkeypatch.setattr(limiter._counter._store, "release", boom)   # noqa: SLF001
+    monkeypatch.setattr(limiter._counter._store, "release", boom)
 
     with caplog.at_level(logging.WARNING, logger="app.services.rate_limit_store"):
         # 修复前：这里抛 NameError；收敛后：异常被 DailyCounter.release 兜住
-        limiter._release("global:qa", "2026-09-11", True)     # noqa: SLF001
+        limiter._release("global:qa", "2026-09-11", True)
 
     # 用 getMessage() 拿到已格式化文本；不要对 record.message 再套 % 格式化
     messages = [r.getMessage() for r in caplog.records]
@@ -201,7 +201,7 @@ def test_release_skipped_when_global_layer_disabled(monkeypatch) -> None:
     limiter = RateLimiter(
         now_fn=clock.now_fn, wall_fn=clock.wall_fn, store=CountingStore()
     )
-    limiter._release("global:qa", "2026-09-11", False)   # noqa: SLF001
+    limiter._release("global:qa", "2026-09-11", False)
     assert calls == [], "L3 未启用时不该调用 release"
 
 

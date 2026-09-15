@@ -21,7 +21,7 @@ from app.services.vector_store import VectorStore
 class _FailingClient:
     """模拟 dashscope embedding 接口不可用。"""
 
-    def embed(self, texts, model):  # noqa: ANN001, ANN201
+    def embed(self, texts, model):
         raise TransportError("连接被拒绝")
 
 
@@ -62,7 +62,7 @@ def test_fallback_is_sticky(dashscope_embedding) -> None:
     calls = {"n": 0}
 
     class _Flaky:
-        def embed(self, texts, model):  # noqa: ANN001, ANN201
+        def embed(self, texts, model):
             calls["n"] += 1
             raise TransportError("boom")
 
@@ -124,10 +124,10 @@ class _StubEmbedder:
     def degraded(self) -> bool:
         return self._degraded
 
-    def embed(self, texts):  # noqa: ANN001, ANN201
+    def embed(self, texts):
         return np.tile(np.arange(self.dim, dtype=np.float32), (len(texts), 1))
 
-    def embed_one(self, text):  # noqa: ANN001, ANN201
+    def embed_one(self, text):
         return self.embed([text])[0]
 
 

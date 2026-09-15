@@ -84,7 +84,7 @@ def run_pipeline(
     if HAS_LANGGRAPH:
         try:
             return get_graph().invoke(state)  # type: ignore[return-value]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("LangGraph 执行失败，退化为顺序执行: %s", exc)
     return _run_sequential(state)
 

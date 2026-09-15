@@ -239,7 +239,7 @@ def _cue_bonus(sentence: str, cues: set[str], query: str) -> float:
         return 0.0
     _, q_bi = _tokens(query)
     bonus = 0.0
-    for q_re, strong_re, vague_re, name in _INTENTS:
+    for _q_re, strong_re, vague_re, name in _INTENTS:
         if name not in cues:
             continue
         for m in strong_re.finditer(sentence):

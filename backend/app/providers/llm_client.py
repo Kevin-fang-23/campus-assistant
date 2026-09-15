@@ -18,7 +18,8 @@ import logging
 import random
 import threading
 import time
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import httpx
 

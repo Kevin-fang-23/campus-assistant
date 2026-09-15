@@ -65,7 +65,9 @@ class LocalHashEmbedding(BaseEmbedding):
         clean = _TOKEN_SPLIT.sub(" ", (text or "").lower())
         chars = [c for c in clean if not c.isspace()]
         grams = list(chars)
-        grams += ["".join(pair) for pair in zip(chars, chars[1:])]
+        # strict=False 是刻意的：相邻双字配对（chars 与去掉首字符的自身）
+        # 长度天然相差 1
+        grams += ["".join(pair) for pair in zip(chars, chars[1:], strict=False)]
         grams += [w for w in clean.split() if len(w) > 1]
         return grams
 

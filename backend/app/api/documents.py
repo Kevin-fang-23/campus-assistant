@@ -28,7 +28,7 @@ async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)) ->
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         db.rollback()
         logger.exception("处理上传文件失败")
         # 对外只给固定文案：原始异常文本可能含文件路径 / SQL 片段等内部信息，
@@ -42,7 +42,7 @@ def upload_text(payload: TextIngestIn, db: Session = Depends(get_db)) -> IngestR
         return ingest_text(db, payload.content, payload.filename)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         db.rollback()
         logger.exception("处理文本失败")
         raise HTTPException(status_code=500, detail="处理失败，请稍后重试或联系管理员") from exc

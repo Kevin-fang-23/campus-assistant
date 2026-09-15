@@ -88,7 +88,7 @@ def main() -> int:
     print("=" * 70)
     quota, workers, attempts = 40, 4, 30
     procs = []
-    for w in range(workers):
+    for _w in range(workers):
         env = dict(os.environ)
         env.update({
             "CA_BACKEND": str(BACKEND), "PYTHONPATH": str(BACKEND),

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -69,7 +69,7 @@ def test_to_naive_local_passes_through_naive_and_none() -> None:
 def test_to_naive_local_converts_aware_to_local_wall_clock() -> None:
     """aware 输入 → 同一瞬时在**本地时区**的墙钟（tmzinfo 去掉）。"""
     offset = datetime.now().astimezone().utcoffset()
-    aware = datetime(2026, 10, 1, 8, 12, tzinfo=timezone.utc)
+    aware = datetime(2026, 10, 1, 8, 12, tzinfo=UTC)
 
     out = to_naive_local(aware)
 
@@ -88,7 +88,7 @@ def test_to_naive_local_does_not_fall_back_to_naive_utc() -> None:
     if not offset:
         pytest.skip("本机为 UTC，无法区分 naive-UTC 与 naive-本地")
 
-    aware = datetime(2026, 10, 1, 8, 12, tzinfo=timezone.utc)
+    aware = datetime(2026, 10, 1, 8, 12, tzinfo=UTC)
     assert to_naive_local(aware) != aware.replace(tzinfo=None)
 
 
@@ -97,7 +97,7 @@ def test_roundtrip_aware_input_matches_user_wall_clock() -> None:
     offset = datetime.now().astimezone().utcoffset() or timedelta(0)
     user_wall = datetime(2026, 10, 1, 16, 12)          # 用户在表单里选的
     as_utc_instant = user_wall - offset                # new Date(...).toISOString()
-    aware = as_utc_instant.replace(tzinfo=timezone.utc)
+    aware = as_utc_instant.replace(tzinfo=UTC)
 
     assert to_naive_local(aware) == user_wall
 

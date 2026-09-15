@@ -341,7 +341,7 @@ def hybrid_search_filtered(
 # ---------------------------------------------------------------------------
 # 索引写入
 # ---------------------------------------------------------------------------
-def bm25_text(db: Session, notice) -> str:  # noqa: ANN001
+def bm25_text(db: Session, notice) -> str:
     """BM25 索引的文本 = 结构化字段 **+ 文档正文**。
 
     为什么必须带正文（这是端到端测试抓出来的缺陷）：
@@ -363,7 +363,7 @@ def bm25_text(db: Session, notice) -> str:  # noqa: ANN001
     return "\n".join(p for p in parts if p)
 
 
-def index_notice(db: Session, notice) -> None:  # noqa: ANN001
+def index_notice(db: Session, notice) -> None:
     """把一条通知同时写入向量索引与 BM25 索引。
 
     这是唯一的生产写入入口 —— 之前直接在 ingest 里调 `get_store().upsert()`，

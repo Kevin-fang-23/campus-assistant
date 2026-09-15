@@ -168,24 +168,24 @@ class NullCountStore:
     要「按天累计但仍留在本进程」请用 `InMemoryCountStore`。
     """
 
-    def get(self, day: str, key: str) -> int:  # noqa: ARG002
+    def get(self, day: str, key: str) -> int:
         return 0
 
-    def load_day(self, day: str) -> dict[str, int]:  # noqa: ARG002
+    def load_day(self, day: str) -> dict[str, int]:
         return {}
 
-    def add(self, day: str, deltas: dict[str, int]) -> None:  # noqa: ARG002
+    def add(self, day: str, deltas: dict[str, int]) -> None:
         return None
 
-    def reserve(self, day: str, key: str, limit: int) -> int:  # noqa: ARG002
+    def reserve(self, day: str, key: str, limit: int) -> int:
         # 无状态实现：永远"占位成功且不超过"，即额度用不完。
         # 这正是 NullCountStore 的语义（显式关闭日额度），保持一致。
         return 1
 
-    def release(self, day: str, key: str) -> None:  # noqa: ARG002
+    def release(self, day: str, key: str) -> None:
         return None
 
-    def purge_before(self, day: str) -> None:  # noqa: ARG002
+    def purge_before(self, day: str) -> None:
         return None
 
     def clear(self) -> None:
@@ -285,7 +285,7 @@ class SqliteCountStore:
     SQLite 需要重试而非立刻抛 `database is locked`。
     """
 
-    def __init__(self, engine, *, busy_timeout_ms: int = 10_000) -> None:  # noqa: ANN001
+    def __init__(self, engine, *, busy_timeout_ms: int = 10_000) -> None:
         self._engine = engine
         self._busy_timeout_ms = busy_timeout_ms
         self._ensure_table()
@@ -548,7 +548,7 @@ class DailyCounter:
         self,
         store: CountStore | None = None,
         *,
-        wall_fn=time.time,  # noqa: ANN001
+        wall_fn=time.time,
         purged_day: str | None = None,
     ) -> None:
         self._store: CountStore = store or InMemoryCountStore()
@@ -637,7 +637,7 @@ class DailyCounter:
         return None
 
     @staticmethod
-    def today(wall_fn=time.time) -> str:  # noqa: ANN001
+    def today(wall_fn=time.time) -> str:
         return datetime.fromtimestamp(wall_fn()).strftime("%Y-%m-%d")
 
     # ---------------- 内部 ----------------

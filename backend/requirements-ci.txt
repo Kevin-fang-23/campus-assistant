@@ -27,8 +27,9 @@ numpy>=1.26
 httpx>=0.27
 pillow>=10.0
 pytest>=8.0
-# 静态检查（ruff.toml 只启用 E/F/W）：编码阶段拦住 F821 未定义符号
-#（P0-1 的 logger NameError 即此类）、F401 未使用导入、F841 未使用变量
+# 静态检查（ruff.toml：E/F/W/BLE/RUF100/I/B/UP/SIM，忽略 E501/B008）：
+# BLE 让既有 `# noqa: BLE001` 真正生效（盲捕获必须显式标记为已审查），
+# RUF100 清除无效 noqa；F821 能拦住 P0-1 那类未定义符号缺陷
 ruff>=0.16
 
 # --- 生产路径（非兜底）依赖，CI 必须覆盖 ---

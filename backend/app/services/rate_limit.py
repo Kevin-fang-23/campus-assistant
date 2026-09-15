@@ -45,9 +45,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Callable
 
 from ..config import settings
 from .rate_limit_store import CountStore, DailyCounter, InMemoryCountStore
@@ -258,17 +258,16 @@ class RateLimiter:
             self._prune(now, day)
 
         # ---- 第二段（锁外，会读写库）：日额度原子占位 ----
+        # `and` 短路求值保证 try_reserve 只在该层启用时被调用（等价于嵌套 if）。
         global_key = f"global:{tier_name}"
         ip_key = f"ip:{tier_name}:{ip}"
-        if cfg.per_day > 0:
-            if not self._counter.try_reserve(global_key, day, cfg.per_day):
-                return Verdict(False, "global_day", self._until_midnight(), 0)
-        if cfg.per_ip_day > 0:
-            if not self._counter.try_reserve(ip_key, day, cfg.per_ip_day):
-                # 全局额度已占，此处退出时应把它还回去 —— 否则
-                # 「被每 IP 额度拒绝」的请求会白吃掉一次全局额度。
-                self._release(global_key, day, cfg.per_day > 0)
-                return Verdict(False, "ip_day", self._until_midnight(), 0)
+        if cfg.per_day > 0 and not self._counter.try_reserve(global_key, day, cfg.per_day):
+            return Verdict(False, "global_day", self._until_midnight(), 0)
+        if cfg.per_ip_day > 0 and not self._counter.try_reserve(ip_key, day, cfg.per_ip_day):
+            # 全局额度已占，此处退出时应把它还回去 —— 否则
+            # 「被每 IP 额度拒绝」的请求会白吃掉一次全局额度。
+            self._release(global_key, day, cfg.per_day > 0)
+            return Verdict(False, "ip_day", self._until_midnight(), 0)
 
         return Verdict(True, None, 0, remaining)
 

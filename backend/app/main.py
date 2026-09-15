@@ -45,8 +45,8 @@ from .config import settings
 from .db import SessionLocal, engine, init_db
 from .graph.pipeline import engine_name
 from .middleware import QaCacheMiddleware, RateLimitMiddleware
-from .providers.ocr import get_ocr
 from .providers.llm_client import LLMError, close_shared_client, get_shared_client
+from .providers.ocr import get_ocr
 from .providers.vlm import get_vlm
 from .services.bm25 import get_bm25_index
 from .services.hybrid import rebuild_bm25

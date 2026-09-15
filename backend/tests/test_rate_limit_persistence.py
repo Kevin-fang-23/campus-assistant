@@ -173,7 +173,7 @@ def test_counter_purge_runs_once_per_day(engine, clock, monkeypatch):
     calls = []
     orig = store.purge_before
 
-    def spy(day):  # noqa: ANN001
+    def spy(day):
         calls.append(day)
         return orig(day)
 
@@ -202,19 +202,19 @@ def test_counter_tolerates_read_failure(clock):
     """读失败按 0 处理（放行）—— 可用性优先于护栏完整性，但要留 warning。"""
 
     class BrokenStore:
-        def get(self, day, key):  # noqa: ANN001, ARG002
+        def get(self, day, key):
             raise RuntimeError("db down")
 
-        def add(self, day, deltas):  # noqa: ANN001, ARG002
+        def add(self, day, deltas):
             raise RuntimeError("db down")
 
-        def load_day(self, day):  # noqa: ANN001, ARG002
+        def load_day(self, day):
             raise RuntimeError("db down")
 
-        def purge_before(self, day):  # noqa: ANN001, ARG002
+        def purge_before(self, day):
             raise RuntimeError("db down")
 
-        def clear(self):  # noqa: ANN201
+        def clear(self):
             raise RuntimeError("db down")
 
     c = DailyCounter(BrokenStore(), wall_fn=clock.wall_fn)

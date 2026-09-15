@@ -217,12 +217,12 @@ def evaluate(
 _MISSING = float("-inf")
 
 
-def _signal(hit, key: str) -> float:  # noqa: ANN001
+def _signal(hit, key: str) -> float:
     value = hit.score_bm25 if key == "bm25" else hit.score_vector
     return _MISSING if value is None else float(value)
 
 
-def _snippet_signal(harness: "Harness", query: str, notice_id: int) -> float:
+def _snippet_signal(harness: Harness, query: str, notice_id: int) -> float:
     """第三个候选判据：句级选片打分（`snippet.score_sentence` 的**最高句分**）。
 
     为什么试这个：前两个判据（BM25 绝对分、余弦）都因两类区间重叠而失败 ——
@@ -374,7 +374,7 @@ def _shared_terms(query: str, text: str) -> set[str]:
 
 
 def threshold_report(
-    harness: "Harness",
+    harness: Harness,
     cases: list[dict],
     noise_cases: list[dict],
     *,
@@ -628,11 +628,16 @@ def main() -> int:
     bm_m = results["仅 BM25"]["details"]
     hyb_m = results[f"混合 (默认 {default_wv:.1f}:{default_wb:.1f})"]["details"]
 
+    # 三个 details 都来自同一份 cases，长度必然相等（strict=True 兜底）
     only_bm25 = [
-        v["query"] for v, b in zip(vec_m, bm_m) if not v["hit"] and b["hit"]
+        v["query"]
+        for v, b in zip(vec_m, bm_m, strict=True)
+        if not v["hit"] and b["hit"]
     ]
     only_vec = [
-        v["query"] for v, b in zip(vec_m, bm_m) if v["hit"] and not b["hit"]
+        v["query"]
+        for v, b in zip(vec_m, bm_m, strict=True)
+        if v["hit"] and not b["hit"]
     ]
     fixed = [
         (v["query"], vec_m[i]["hit"], bm_m[i]["hit"], hyb_m[i]["hit"])

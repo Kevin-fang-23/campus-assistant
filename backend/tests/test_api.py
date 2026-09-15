@@ -78,7 +78,7 @@ def test_upload_internal_error_does_not_leak_details(client: TestClient, monkeyp
 
     secret = "C:\\secret\\path.sql UNIQUE constraint failed: notices.id"
 
-    def _boom(*args, **kwargs):  # noqa: ANN002, ANN003
+    def _boom(*args, **kwargs):
         raise RuntimeError(secret)
 
     monkeypatch.setattr(documents_api, "ingest_bytes", _boom)

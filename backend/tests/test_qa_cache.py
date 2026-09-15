@@ -649,7 +649,7 @@ def test_oversized_qa_body_is_rejected_with_413(client: TestClient, monkeypatch)
 
     monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
     # 构造一个明显超过 _MAX_BODY_BYTES 的 query
-    oversized = "x" * (QaCacheMiddleware._MAX_BODY_BYTES + 1024)  # noqa: SLF001
+    oversized = "x" * (QaCacheMiddleware._MAX_BODY_BYTES + 1024)
     resp = client.post("/api/qa", json={"query": oversized, "top_k": 3})
     assert resp.status_code == 413, (
         f"超大 body 应被 413 拒绝，实际 {resp.status_code}：{resp.text[:200]}"

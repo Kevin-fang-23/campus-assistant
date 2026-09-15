@@ -422,7 +422,8 @@ def test_degradation_keeps_same_citations_as_success_path(
     assert [c["notice_id"] for c in success["citations"]] == [
         c["notice_id"] for c in degraded["citations"]
     ]
-    for s, d in zip(success["citations"], degraded["citations"]):
+    # 长度相等已由上面的 notice_id 列表断言保证，strict=True 顺带兜底
+    for s, d in zip(success["citations"], degraded["citations"], strict=True):
         assert s["score"] == pytest.approx(d["score"], abs=1e-3)
     # 引用片段也不该被 LLM 故障改变
     assert [c["snippet"] for c in success["citations"]] == [

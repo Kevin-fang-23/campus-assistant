@@ -551,7 +551,7 @@ python -m eval.run_retrieval_eval --embedding local_hash --update-baseline
 
 | Job | 内容 |
 |---|---|
-| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check`（E/F/W 静态检查）→ `pytest -q` → **检索质量门禁** `python -m eval.run_retrieval_eval --gate` |
+| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check`（E/F/W/BLE/RUF100/I/B/UP/SIM 静态检查）→ `pytest -q` → **检索质量门禁** `python -m eval.run_retrieval_eval --gate` |
 | `frontend` | Node 22 + `npm ci` → `npx tsc --noEmit` → `npm run test` → `npm run build` |
 
 设计取舍：

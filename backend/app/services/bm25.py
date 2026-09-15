@@ -149,7 +149,7 @@ class BM25Index:
             self._total_length = 0
 
     # ---- 载入 ----
-    def load_documents(self, pairs) -> int:  # noqa: ANN001
+    def load_documents(self, pairs) -> int:
         """用 (notice_id, text) 序列重建索引。
 
         刻意不接 DB 会话：BM25 是纯内存索引，文本从哪来由调用方决定。

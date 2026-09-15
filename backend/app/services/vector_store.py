@@ -229,7 +229,12 @@ class VectorStore:
             k = min(top_k + (len(exclude) if exclude else 0), len(self._ids))
             if _HAS_FAISS:
                 scores, idxs = self._index.search(vec, k)  # type: ignore[union-attr]
-                pairs = [(self._ids[i], float(s)) for s, i in zip(scores[0], idxs[0]) if i >= 0]
+                # FAISS 契约保证 scores 与 idxs 同形；strict=True 顺带兜住异常返回
+                pairs = [
+                    (self._ids[i], float(s))
+                    for s, i in zip(scores[0], idxs[0], strict=True)
+                    if i >= 0
+                ]
             else:
                 sims = (self._matrix @ vec.T).ravel()  # type: ignore[operator]
                 order = np.argsort(-sims)[:k]

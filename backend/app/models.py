@@ -90,7 +90,7 @@ class Document(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, index=True)
 
-    notices: Mapped[list["Notice"]] = relationship(
+    notices: Mapped[list[Notice]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
 
@@ -124,7 +124,7 @@ class Notice(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, onupdate=local_now)
 
     document: Mapped[Document] = relationship(back_populates="notices")
-    tasks: Mapped[list["Task"]] = relationship(
+    tasks: Mapped[list[Task]] = relationship(
         back_populates="notice", cascade="all, delete-orphan"
     )
 
@@ -150,7 +150,7 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=local_now, onupdate=local_now)
 
     notice: Mapped[Notice | None] = relationship(back_populates="tasks")
-    events: Mapped[list["TaskEvent"]] = relationship(
+    events: Mapped[list[TaskEvent]] = relationship(
         back_populates="task", cascade="all, delete-orphan", order_by="TaskEvent.id"
     )
 

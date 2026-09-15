@@ -43,7 +43,7 @@ def parse(data: bytes, filename: str = "input.pdf") -> ParsedDoc:
                     except Exception as exc:  # noqa: BLE001
                         doc.warnings.append(f"第 {pno + 1} 页 OCR 失败：{exc}")
                 page_texts.append(text)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("PDF 解析失败: %s", filename)
         return ParsedDoc(kind="pdf", meta={"error": str(exc)}, warnings=[f"PDF 解析失败：{exc}"])
 

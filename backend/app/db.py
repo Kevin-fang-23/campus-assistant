@@ -32,7 +32,7 @@ if _IS_SQLITE:
     #
     # 注意 PostgreSQL 无需此设置（外键约束天生强制执行）。
     @event.listens_for(Engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):  # noqa: ANN001
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()

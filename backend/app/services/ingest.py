@@ -12,7 +12,16 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..graph.pipeline import run_pipeline
-from ..models import Document, DocKind, DocStatus, Notice, Task, TaskEvent, TaskStatus, local_now
+from ..models import (
+    DocKind,
+    DocStatus,
+    Document,
+    Notice,
+    Task,
+    TaskEvent,
+    TaskStatus,
+    local_now,
+)
 from ..parsers import detect_kind, parse_bytes
 from ..schemas import DocumentOut, IngestResult, NoticeOut, TaskOut
 from .hybrid import index_notice

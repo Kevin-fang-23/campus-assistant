@@ -66,7 +66,7 @@ def extract_node(state: PipelineState) -> dict[str, Any]:
     base = state.get("base_time")
     try:
         data = get_vlm().extract(text, category, state.get("images") or [], base=base)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("抽取节点异常，降级为规则抽取")
         data = rule_extract.extract(text, category, base=base)
         data["extra"]["error"] = str(exc)
