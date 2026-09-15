@@ -127,7 +127,11 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    cases = [json.loads(l) for l in CASES_FILE.read_text(encoding="utf-8").splitlines() if l.strip()]
+    cases = [
+        json.loads(line)
+        for line in CASES_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     if args.tag:
         cases = [c for c in cases if args.tag in (c.get("tags") or [])]
     if not cases:

@@ -252,10 +252,21 @@ class VectorStore:
 
 
 _store: VectorStore | None = None
+_store_lock = threading.Lock()
 
 
 def get_store() -> VectorStore:
+    """进程级单例（线程安全）。
+
+    FastAPI 的同步端点跑在线程池里，多个请求线程可能并发地**首次**调用
+    本函数（例如启动后第一批检索请求）——无锁时两个线程会各自构造一个
+    VectorStore，后写者覆盖先写者，先构造的索引里已写入的向量全部丢失，
+    表现为「检索时而召回时而空」。与 qa_cache.get_cache() 的单例模式保持
+    一致：双重检查 + 模块级锁。
+    """
     global _store
     if _store is None:
-        _store = VectorStore()
+        with _store_lock:
+            if _store is None:
+                _store = VectorStore()
     return _store

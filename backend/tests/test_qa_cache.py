@@ -266,6 +266,8 @@ def test_no_recall_response_is_also_cached(
     r1 = client.post("/api/qa", json={"query": no_match, "top_k": 1}).json()
     r2 = client.post("/api/qa", json={"query": no_match, "top_k": 1}).json()
 
+    # 首次走完整流程（1 次 LLM），第二次命中缓存不再调用
+    assert calls["count"] == 1, f"第二次应命中缓存不再调 LLM，实际调了 {calls['count']} 次"
     # 即便召回分数低也缓存 —— 第二次 cache_hit=True，answer 一致
     assert r1["cache_hit"] is False
     assert r2["cache_hit"] is True
@@ -485,7 +487,7 @@ def test_concurrent_get_set_no_crash() -> None:
 # --------------------------------------------------------------------------
 def test_answerout_cache_hit_default_is_false() -> None:
     """AnswerOut 不显式传 cache_hit 时默认 False（向后兼容旧调用方）。"""
-    from app.schemas import AnswerOut, CitationOut
+    from app.schemas import AnswerOut
 
     out = AnswerOut(
         query="x",
@@ -618,7 +620,7 @@ def test_notice_update_invalidates_qa_cache(client: TestClient, monkeypatch) -> 
     notice_id = resp.json()["notice"]["id"]
 
     q = "操作系统小班课"
-    r1 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
+    client.post("/api/qa", json={"query": q, "top_k": 3})
     r2 = client.post("/api/qa", json={"query": q, "top_k": 3}).json()
     assert r2["cache_hit"] is True, "前置条件：缓存应已生效"
 
@@ -659,3 +661,48 @@ def test_normal_qa_body_passes_size_guard(client: TestClient, monkeypatch) -> No
     monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
     resp = client.post("/api/qa", json={"query": "操作系统作业什么时候截止", "top_k": 3})
     assert resp.status_code == 200, f"正常请求不应被 413 拦截：{resp.status_code}"
+
+
+# --------------------------------------------------------------------------
+# 10. 契约：中间件命中路径的 JSON 必须与 response_model 序列化保持同构
+# --------------------------------------------------------------------------
+def test_cache_hit_json_round_trips_through_answerout(client: TestClient, monkeypatch) -> None:
+    """命中路径绕过了 FastAPI 的 response_model 序列化，必须钉住它与
+    未命中路径（走 response_model）的输出**结构等价**。
+
+    背景：QaCacheMiddleware 命中时直接 `JSONResponse(hit.model_dump(mode="json"))`，
+    不经过 response_model。当前两者恰好一致；但一旦 AnswerOut 加入
+    datetime / Enum / 自定义类型且 model_dump 的兼容处理没跟上，两条路径
+    就会返回不同格式 —— 且没有任何现有测试会失败。本用例把这个
+    「当前恰好一致」的假设变成护栏：
+      1. 命中 JSON 能通过 AnswerOut.model_validate() 往返（字段可解析）；
+      2. 命中与未命中的**字段集完全一致**；
+      3. 除 cache_hit 外内容一致（cache_hit 是唯一允许的差异）。
+    """
+    from app.schemas import AnswerOut
+
+    monkeypatch.setattr(qa_module.settings, "qa_cache_enabled", True)
+
+    r1 = client.post("/api/qa", json={"query": QUERY, "top_k": 3})  # 未命中：走 endpoint
+    r2 = client.post("/api/qa", json={"query": QUERY, "top_k": 3})  # 命中：走中间件
+    assert r1.status_code == r2.status_code == 200
+    assert r2.json()["cache_hit"] is True, "前置条件：第二次应命中缓存"
+    assert r1.json()["cache_hit"] is False
+
+    # 1. 命中路径的 JSON 必须能通过 AnswerOut 校验（等价于 response_model 的把关）
+    validated = AnswerOut.model_validate(r2.json())
+    assert validated.cache_hit is True
+    assert validated.query == QUERY
+
+    # 2. 字段集一致 —— 命中路径不得多出或少掉任何字段
+    assert set(r1.json().keys()) == set(r2.json().keys()), (
+        f"两条路径字段集漂移：仅命中路径有 "
+        f"{set(r2.json()) - set(r1.json())}，仅未命中路径有 "
+        f"{set(r1.json()) - set(r2.json())}"
+    )
+
+    # 3. 内容一致（cache_hit 除外）
+    miss, hit = dict(r1.json()), dict(r2.json())
+    assert miss.pop("cache_hit") is False
+    assert hit.pop("cache_hit") is True
+    assert miss == hit, "命中路径返回的内容与未命中路径不一致"

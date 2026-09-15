@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -100,7 +99,7 @@ print()
 for line in results:
     print(" ", line)
 print()
-allok = all(l.startswith("✅") for l in results)
+allok = all(ln.startswith("✅") for ln in results)
 print(f"总判定：{'✅ 全部通过 —— 生产路径确实在用 SQLite 持久化日计数' if allok else '❌ 存在失败项'}")
 print("=" * 70)
 sys.exit(0 if allok else 1)

@@ -107,7 +107,7 @@ def main() -> int:
         if p.returncode != 0:
             print(f"  worker{i} 失败 rc={p.returncode}\n  {err[-800:]}")
             return 1
-        line = next((l for l in out.splitlines() if l.startswith("ALLOWED=")), "")
+        line = next((ln for ln in out.splitlines() if ln.startswith("ALLOWED=")), "")
         a, t = parse(line)
         allowed_total += a
         print(f"  worker{i}: 尝试 {t} 次，放行 {a} 次")

@@ -156,6 +156,15 @@ export default function Search() {
                   AI 生成
                 </span>
               )}
+              {qa.cache_hit && (
+                <span
+                  className="badge sm"
+                  style={{ background: "#0891b2" }}
+                  title="同一问题在缓存有效期内重复提问，直接复用上次回答，未调用模型"
+                >
+                  缓存命中
+                </span>
+              )}
               <span className="muted" style={{ fontWeight: 400 }}>
                 · 引擎 {qa.backend}
               </span>

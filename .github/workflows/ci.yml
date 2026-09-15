@@ -31,6 +31,12 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements-ci.txt
 
+      # 静态检查：E/F/W 级别（ruff.toml 已排除 E501 行长）。
+      # F821（未定义符号）能在 CI 阶段拦住 P0-1 那类「引用了从未定义的名字」
+      # 的缺陷 —— 那类分支只有异常路径才执行，单测很难覆盖到。
+      - name: 静态检查（ruff）
+        run: ruff check app tests eval scripts
+
       # 不注入任何密钥，也不设置 provider 变量：
       # tests/conftest.py 自身会把 VLM/QA 固定为 mock、OCR 固定为 stub，
       # embedding 在无 Key 时自动回退本地哈希 —— 测试本就不该依赖外网。

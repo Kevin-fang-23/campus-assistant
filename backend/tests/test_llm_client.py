@@ -12,7 +12,6 @@ from app.providers.llm_client import (
     AuthError,
     BadRequestError,
     OpenAICompatClient,
-    RateLimitError,
     ResponseFormatError,
     ServerError,
     TransportError,

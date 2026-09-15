@@ -53,7 +53,7 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 | **LLM 连接复用** | 20 次问答的 TCP 建连数 **21 → 1**（降约 95%） | `pytest tests/test_llm_client_reuse.py`（起真实本地服务器统计 TCP 连接数） |
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
 | **限流计数持久化** | 日计数写 SQLite（WAL，**88.8µs/请求**）：4 个真实子进程共享额度 40 实测**每次恰好放行 40 次**、重启不清零 | `pytest tests/test_rate_limit_persistence.py` |
-| **检索与评测** | 后端 **332 passed**；检索质量门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **检索与评测** | 后端 **334 passed**；检索质量门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
 | **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
 
 ---
@@ -139,7 +139,7 @@ campus-assistant/
 │   │   ├── db.py                 # 引擎 / Session
 │   │   ├── main.py               # 应用入口 + CORS + 限流 + /health + 静态托管
 │   │   └── seed.py               # 5 条演示数据（4 类 + 1 条近似重复）
-│   ├── tests/                    # 14 个测试模块 / 332 条用例
+│   ├── tests/                    # 14 个测试模块 / 334 条用例
 │   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 阈值标定 + 门禁基线）
 │   ├── requirements.txt          # 全部依赖（含可选 OCR/DB 引擎）
 │   ├── requirements-ci.txt       # CI 依赖（核心 + 生产路径，不含 OCR 栈）
@@ -465,7 +465,7 @@ SQLite 写事务互斥，因此不可能有两个进程同时读到 39 再各自
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | 健康检查与运行时能力（引擎 / 模型 / 向量后端 / 是否降级） |
+| GET | `/health` | 健康检查与运行时能力（引擎 / 模型 / 向量后端 / 是否降级 / 缓存命中率 / 限流额度余量） |
 | GET | `/docs` | 交互式 API 文档（OpenAPI） |
 
 完整字段见 `backend/app/schemas.py` 与 `/docs`。
@@ -481,7 +481,7 @@ cd campus-assistant/backend
 pytest -q
 ```
 
-当前 **332 passed**（14 个测试模块 + `conftest.py`）。
+当前 **334 passed**（14 个测试模块 + `conftest.py`）。
 
 > **测试完全不需要 API Key，也不访问外网**：`conftest.py` 已把 VLM / QA 固定为 mock、
 > OCR 固定为 stub，embedding 在无 Key 时自动回退本地哈希。因此可直接在 CI 中运行。
@@ -492,7 +492,7 @@ pytest -q
 |---|---|
 | `test_datetime_utils.py` | 中文时间解析（相对 / 星期 / 改期 / 截止） |
 | `test_pipeline.py` | 流水线（分类 / 抽取 / 校验 / 去重 / 待办） |
-| `test_api.py` | 全链路 API（导入 / 去重 / 流转 / 复核 / 检索 / 校验错误 / 500 响应脱敏） |
+| `test_api.py` | 全链路 API（导入 / 去重 / 流转 / 复核 / 检索 / 校验错误 / 500 响应脱敏 / `/health` 缓存与限流状态） |
 | `test_snippet.py` | 句级选片：中文分句边界、打分、`/api/qa` 与 `/api/search` 端到端 |
 | `test_hybrid.py` | BM25 索引与融合：tokenization、RRF 边界、权重归一化、正文精确串召回、相关性阈值（含"单字重合不算相关"） |
 | `test_llm_client.py` | LLM 客户端：重试退避、错误分级、响应格式校验 |
@@ -502,7 +502,7 @@ pytest -q
 | `scripts/verify_rate_limit_multiproc.py` | **真实子进程**端到端：#8 多 worker 额度精确、#9 重启不清零（同进程多实例模拟说服力不足） |
 | `scripts/verify_rate_limit_prod_path.py` | 确认生产路径真的启用了持久化：后端类型、表存在、`journal_mode=wal`、真实请求后计数落库 |
 | `test_qa_degradation.py` | 问答降级路径 |
-| `test_qa_cache.py` | 问答缓存：命中跳过 LLM、TTL 过期、LRU 淘汰、知识库变更后失效、命中不消耗限流额度、**超大请求体 413 护栏** |
+| `test_qa_cache.py` | 问答缓存：命中跳过 LLM、TTL 过期、LRU 淘汰、知识库变更后失效、命中不消耗限流额度、超大请求体 413 护栏、**命中路径与 response_model 的结构契约** |
 | `test_embedding_backend_truth.py` | 配置后端 vs 实际生效后端的一致性、**降级态拒绝 reindex**（防降级向量覆盖历史向量） |
 | `test_retrieval_set.py` | 检索评测集完整性（规模下限、id 唯一、expected 引用可解析、两路文本分离） |
 | `test_eval_gate.py` | 检索质量门禁：劣化必须被拦、改进不得失败、容差边界、基线文件形态 |
@@ -515,13 +515,13 @@ npm run test        # vitest（happy-dom 环境）
 npm run typecheck   # tsc --noEmit
 ```
 
-当前 **36 passed**（3 个测试文件）：
+当前 **37 passed**（3 个测试文件）：
 
 | 测试文件 | 关注点 |
 |---|---|
 | `src/common.test.ts` | 时间格式化 / 逾期判定 / 分类状态标签兜底 / 置信度分档 |
 | `src/api.test.ts` | 请求构造、`detail` 错误透传、非 JSON 响应兜底、204 无响应体 |
-| `src/components/Search.test.tsx` | snippet 优先与摘要去重、`[1]` 引用高亮、命中来源徽章、降级提示、错误态、模式切换清空结果、两种空态文案（阈值过滤 vs 库内无） |
+| `src/components/Search.test.tsx` | snippet 优先与摘要去重、`[1]` 引用高亮、命中来源徽章、降级提示、错误态、模式切换清空结果、两种空态文案（阈值过滤 vs 库内无）、**缓存命中徽章** |
 
 ### 离线评测
 
@@ -551,7 +551,7 @@ python -m eval.run_retrieval_eval --embedding local_hash --update-baseline
 
 | Job | 内容 |
 |---|---|
-| `backend` | Python 3.13 + `requirements-ci.txt` → `pytest -q` → **检索质量门禁** `python -m eval.run_retrieval_eval --gate` |
+| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check`（E/F/W 静态检查）→ `pytest -q` → **检索质量门禁** `python -m eval.run_retrieval_eval --gate` |
 | `frontend` | Node 22 + `npm ci` → `npx tsc --noEmit` → `npm run test` → `npm run build` |
 
 设计取舍：
@@ -608,4 +608,4 @@ docker compose up --build
   换 embedding 后端或调权重后指标必然变化，那不算劣化，需人工确认后 `--update-baseline`。
 - Mock VLM 为规则实现，对排版规整的正式通知效果最好；复杂海报建议接入真实视觉大模型。
 - 生产 PostgreSQL 尚未内置 Alembic 迁移，目前用 `create_all`；规模化前建议补迁移。
-- 前端自动化测试覆盖 **3 个文件 / 36 条用例**，聚焦纯逻辑与关键组件；整页渲染改动仍依赖人工验证 + 端到端截图。
+- 前端自动化测试覆盖 **3 个文件 / 37 条用例**，聚焦纯逻辑与关键组件；整页渲染改动仍依赖人工验证 + 端到端截图。

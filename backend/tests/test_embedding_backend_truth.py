@@ -137,7 +137,6 @@ def isolated_db():
     绝不能污染 conftest 里那个被全局共享的测试库（否则 stats 类断言会漂移）。
     """
     from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session as _Session
     from sqlalchemy.orm import sessionmaker
 
     import app.models  # noqa: F401  确保所有表都注册到 Base.metadata

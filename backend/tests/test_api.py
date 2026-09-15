@@ -29,6 +29,24 @@ def test_health(client: TestClient) -> None:
     assert "provider" in body["vlm"]
 
 
+def test_health_reports_cache_and_rate_limit(client: TestClient) -> None:
+    """/health 必须暴露缓存与限流的运行时状态（演示排障出口）。
+
+    - cache：至少含 enabled；开启时还应含命中率统计（size/hits/misses/hit_rate）；
+    - rate_limit：含 store 后端类型与 /api/qa 全局日额度的已用/上限，
+      两者必须是可比较的整数（「额度还剩多少」一眼可见）。
+    """
+    body = client.get("/health").json()
+    assert "cache" in body, "/health 缺少 cache 字段"
+    assert body["cache"]["enabled"] in (True, False)
+    assert "rate_limit" in body, "/health 缺少 rate_limit 字段"
+    rl = body["rate_limit"]
+    assert rl["store"] in ("sqlite", "none"), f"未知限流存储后端：{rl['store']}"
+    assert isinstance(rl["qa_used_today"], int)
+    assert isinstance(rl["qa_per_day"], int)
+    assert rl["qa_used_today"] <= rl["qa_per_day"]
+
+
 def test_text_ingest_flow(client: TestClient) -> None:
     resp = client.post("/api/documents/text", json={"content": HOMEWORK, "filename": "os_hw.txt"})
     assert resp.status_code == 200, resp.text

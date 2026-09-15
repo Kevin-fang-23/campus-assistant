@@ -251,4 +251,35 @@ describe("Search 组件的问答模式", () => {
     // 星号不得残留在答案里
     expect(container.querySelector(".answer")?.textContent).not.toContain("**");
   });
+
+  it("cache_hit=true 时展示「缓存命中」徽章，未命中时不展示", async () => {
+    // 缓存命中 = 同一问题 TTL 内重复提问，未调用模型 —— 前端把它可见化，
+    // 让缓存层的价值从代码变成演示时可见的效果。
+    const hit: QAOut = {
+      query: "工作坊报名什么时候截止",
+      answer: "报名截止时间为 10 月 10 日 18:00 [1]。",
+      backend: "faiss+dashscope",
+      degraded: false,
+      cache_hit: true,
+      citations: [],
+    };
+    mockedAskQA.mockResolvedValueOnce(hit);
+
+    const user = userEvent.setup();
+    render(<Search />);
+    await user.click(screen.getByRole("button", { name: /智能问答/ }));
+    await user.type(screen.getByRole("textbox"), "工作坊报名什么时候截止");
+    await user.click(screen.getByRole("button", { name: "提问" }));
+
+    expect(await screen.findByText("缓存命中")).toBeInTheDocument();
+
+    // 未命中（cache_hit 缺省 false）时不得出现该徽章
+    const miss: QAOut = { ...hit, cache_hit: false };
+    mockedAskQA.mockResolvedValueOnce(miss);
+    await user.type(screen.getByRole("textbox"), "换个问题再问一次");
+    await user.click(screen.getByRole("button", { name: "提问" }));
+    // 等待第二次回答渲染完成后再断言徽章已消失
+    await screen.findAllByText("AI 生成");
+    expect(screen.queryByText("缓存命中")).not.toBeInTheDocument();
+  });
 });

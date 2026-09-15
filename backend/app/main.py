@@ -50,6 +50,7 @@ from .providers.llm_client import LLMError, close_shared_client, get_shared_clie
 from .providers.vlm import get_vlm
 from .services.bm25 import get_bm25_index
 from .services.hybrid import rebuild_bm25
+from .services.qa_cache import get_cache
 from .services.rate_limit import get_limiter
 from .services.rate_limit_store import InMemoryCountStore, SqliteCountStore
 from .services.vector_store import get_store
@@ -96,6 +97,15 @@ def _attach_rate_limit_store() -> None:
 async def lifespan(app: Any):
     init_db()
     _attach_rate_limit_store()
+    # 首次构造缓存单例时把 .env 的 TTL / 容量配置带上。
+    # get_cache() 是「首次调用按参数构造、之后忽略参数」的单例，
+    # 若不在启动时显式带参调用，QA_CACHE_TTL_SECONDS / QA_CACHE_MAX_SIZE
+    # 这两个配置会被静默忽略（单例以默认值 300/128 落地）。
+    if settings.qa_cache_enabled:
+        get_cache(
+            max_size=settings.qa_cache_max_size,
+            ttl_seconds=settings.qa_cache_ttl_seconds,
+        )
     # 预热共享 LLM 客户端：把首次 DNS+TCP+TLS 握手的代价挪到启动阶段，
     # 而不是让第一个真实用户的请求承担（演示现场尤其在意首问延迟）。
     #
@@ -185,6 +195,13 @@ app.include_router(qa.router)
 def health() -> dict:
     store = get_store()
     embedder = store.embedder
+    # 缓存与限流的运行时状态：stats() / used_today() 早已实现，此前没有出口。
+    # 演示排障时「额度还剩多少」「缓存命中率多少」直接看 /health 即可，
+    # 不必查库或打日志。
+    limiter = get_limiter()
+    cache_info: dict = {"enabled": settings.qa_cache_enabled}
+    if settings.qa_cache_enabled:
+        cache_info.update(get_cache().stats())
     return {
         "status": "ok",
         "app": settings.app_name,
@@ -199,6 +216,14 @@ def health() -> dict:
             "configured_embedding": embedder.name,
             "active_embedding": embedder.active_name,
             "embedding_degraded": embedder.degraded,
+        },
+        "cache": cache_info,
+        "rate_limit": {
+            "enabled": settings.rate_limit_enabled,
+            "store": settings.rate_limit_store,
+            # 资金护栏的两个关键量：/api/qa 全局日额度已用 / 上限
+            "qa_used_today": limiter.used_today("global:qa"),
+            "qa_per_day": settings.rate_limit_qa_per_day,
         },
         "database": settings.database_url.split("://", 1)[0],
     }

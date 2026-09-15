@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -38,10 +39,10 @@ from ..services.hybrid import hybrid_search
 from ..services.notice_text import (
     CONTEXT_MAX_CHARS,
     SNIPPET_MAX_CHARS,
-    notice_context,
-    notice_snippet,
+    resolve_notice_texts,
 )
 from ..services.qa_cache import cache_key, get_cache
+from ..services.snippet import select_context, select_snippet
 from ..services.vector_store import get_store
 
 logger = logging.getLogger(__name__)
@@ -87,19 +88,34 @@ def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
     # 精确串（课程名/房间号/手机号）靠 BM25 兜住，语义相近靠向量兜住。
     hits = hybrid_search(payload.query, payload.top_k)
 
+    # 批量取通知与文本：逐条 db.get 是 N+1（top_k=5 时 ~10 次查询），
+    # 批量后固定 2 次；snippet/context 的选片逻辑不变（select_snippet/context 纯函数）。
+    notices: dict[int, Notice] = {}
+    if hits:
+        rows = (
+            db.execute(select(Notice).where(Notice.id.in_([h.notice_id for h in hits])))
+            .scalars()
+            .all()
+        )
+        notices = {n.id: n for n in rows}
+    texts = resolve_notice_texts(db, list(notices.values()))
+
     citations: list[CitationOut] = []
     sources: list[str] = []  # 与 citations 同序，用于拼 context
     for hit in hits:
-        notice = db.get(Notice, hit.notice_id)
+        notice = notices.get(hit.notice_id)
         if not notice:
             continue
+        text = texts[notice.id]
         citations.append(
             CitationOut(
                 notice_id=notice.id,
                 title=notice.title,
                 # 句级选片：挑出与问题最相关的句子，而不是从字中间硬切。
                 # 硬切会切出残句（"…提交至学习通。截止时"），溯源展示不可读。
-                snippet=notice_snippet(db, notice, payload.query, max_chars=_SNIPPET_LIMIT),
+                snippet=select_snippet(
+                    text, payload.query, title=notice.title, max_chars=_SNIPPET_LIMIT
+                ),
                 score=round(hit.score, 4),
             )
         )
@@ -107,7 +123,9 @@ def _build_answer(payload: QAIn, db: Session) -> AnswerOut:
         # 原实现取前 400 字，若关键信息（截止时间/地点）落在其后，
         # 模型看不到就只能回答"未找到"，而库里其实有答案。
         sources.append(
-            notice_context(db, notice, payload.query, max_chars=_CONTEXT_PER_NOTICE)
+            select_context(
+                text, payload.query, title=notice.title, max_chars=_CONTEXT_PER_NOTICE
+            )
         )
 
     if not citations:

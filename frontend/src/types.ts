@@ -161,6 +161,8 @@ export interface QACitationOut {
  * POST /api/qa 响应。
  * degraded=true 表示生成式回答不可用（未配置 Key / 服务端强制 mock / LLM 调用失败），
  * 此时 answer 退化为 top1 引用片段，仍可直接展示。
+ * cache_hit=true 表示本次回答直接复用了缓存（TTL 内重复提问），
+ * 未发起 LLM 与 embedding 调用 —— 前端可据此展示"缓存命中"标识。
  */
 export interface QAOut {
   query: string;
@@ -168,6 +170,7 @@ export interface QAOut {
   citations: QACitationOut[];
   backend: string;
   degraded: boolean;
+  cache_hit?: boolean;
 }
 
 export interface StatsOut {
@@ -197,5 +200,9 @@ export interface Health {
     active_embedding?: string;
     embedding_degraded?: boolean;
   };
+  /** /api/qa 缓存运行时状态（命中率、条目数）；enabled=false 时只有开关字段。 */
+  cache?: { enabled: boolean; size?: number; hits?: number; misses?: number; hit_rate?: number };
+  /** 限流运行时状态：/api/qa 全局日额度已用 / 上限。 */
+  rate_limit?: { enabled: boolean; store: string; qa_used_today: number; qa_per_day: number };
   database: string;
 }
