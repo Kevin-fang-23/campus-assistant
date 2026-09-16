@@ -54,7 +54,7 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
 | **限流计数持久化** | 日计数写 SQLite（WAL，**88.8µs/请求**）：4 个真实子进程共享额度 40 实测**每次恰好放行 40 次**、重启不清零 | `pytest tests/test_rate_limit_persistence.py` |
 | **问答缓存语义复用** | 字面归一化之外再加查询向量近邻判定：改写问法的复用率 **1/10 → 6/10**，阈值经 22 对标注样本实测标定（**零误配**）、可配置、可回滚 | `python -m eval.run_cache_threshold_eval` |
-| **检索与评测** | 后端 **366 passed**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **检索与评测** | 后端 **366 passed / 17 个测试模块**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例：分类准确率 **40/40**、6 字段微平均 F1 **0.92** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
 | **数据库迁移** | 引入 Alembic：启动自动 `upgrade`，`create_all` 存量库自动 `stamp` 打基线、数据不丢；迁移一致性测试保证「迁移脚本 = 模型快照」永不漂移 | `alembic upgrade head`、`pytest tests/test_db_migrations.py` |
 | **前端测试覆盖** | vitest + Testing Library 覆盖 Dashboard/Tasks/Notices/Upload/Search/API 工具，**61 passed**（含逾期标红、二次确认、naive 时间 bug 回归）；tsc + 生产构建全绿 | `npm run test` |
 | **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
@@ -134,6 +134,7 @@ campus-assistant/
 │   │   │   ├── notice_text.py    #   通知文本来源与片段（问答/检索共用）
 │   │   │   ├── rate_limit.py     #   三层限流策略与判定
 │   │   │   ├── rate_limit_store.py #  日计数持久化（SQLite/内存/文件后端）
+│   │   │   ├── qa_cache.py       #   问答缓存（精确 key + 语义近邻两段查找）
 │   │   │   ├── vector_store.py   #   FAISS / NumPy 向量库
 │   │   │   ├── rule_extract.py   #   规则抽取兜底
 │   │   │   ├── datetime_utils.py #   中文时间归一化
@@ -144,8 +145,11 @@ campus-assistant/
 │   │   ├── schemas.py            # Pydantic 契约
 │   │   ├── db.py                 # 引擎 / Session
 │   │   ├── main.py               # 应用入口 + CORS + 限流 + /health + 静态托管
+│   │   ├── db_migrations.py      # 启动钩子：alembic upgrade / 存量库 stamp 打基线
 │   │   └── seed.py               # 5 条演示数据（4 类 + 1 条近似重复）
-│   ├── tests/                    # 16 个测试模块 / 361 条用例
+│   ├── alembic/                  # 迁移脚本（versions/ 下为各修订）
+│   ├── alembic.ini
+│   ├── tests/                    # 17 个测试模块 / 366 条用例
 │   ├── eval/                     # 离线评测（抽取质量 + 检索质量 + 阈值标定 + 门禁基线）
 │   ├── requirements.txt          # 全部依赖（含可选 OCR/DB 引擎）
 │   ├── requirements-ci.txt       # CI 依赖（核心 + 生产路径，不含 OCR 栈）
@@ -160,8 +164,8 @@ campus-assistant/
 │       ├── App.tsx               # 侧边栏 + 视图切换
 │       ├── test/setup.ts         # 测试前置（jest-dom 断言 + cleanup）
 │       ├── *.test.ts             # 纯逻辑测试（common / api）
-│       └── components/           # Dashboard / Upload / Notices / Tasks / Search（含 Search.test.tsx）
-├── .github/workflows/ci.yml       # CI：后端测试 + 检索质量门禁 + 前端类型检查与构建
+│       └── components/           # Dashboard / Upload / Notices / Tasks / Search（各含同名 .test.tsx）
+├── .github/workflows/ci.yml       # CI：后端测试 + 检索质量门禁 + 缓存阈值门禁 + 前端类型检查与构建
 ├── docs/                          # 架构说明与界面截图
 │   ├── architecture.md           #   分层职责 / 数据流向 / 降级矩阵 / 设计取舍
 │   ├── architecture.svg          #   架构图矢量源（可编辑）
@@ -549,7 +553,7 @@ cd campus-assistant/backend
 pytest -q
 ```
 
-当前 **361 passed**（16 个测试模块 + `conftest.py`）。
+当前 **366 passed**（17 个测试模块 + `conftest.py`）。
 
 > **测试完全不需要 API Key，也不访问外网**：`conftest.py` 已把 VLM / QA 固定为 mock、
 > OCR 固定为 stub，embedding 在无 Key 时自动回退本地哈希。因此可直接在 CI 中运行。
@@ -577,6 +581,7 @@ pytest -q
 | `test_retrieval_set.py` | 检索评测集完整性（规模下限、id 唯一、expected 引用可解析、两路文本分离、**噪声样本量下限与分层齐备**） |
 | `test_eval_gate.py` | 检索质量门禁：劣化必须被拦、改进不得失败、容差边界、基线文件形态 |
 | `test_cache_threshold_eval.py` | 缓存阈值标定：数据集完整性（**改写对不得与字面归一化重合**，否则增量价值失真）、夹逼边界、推荐规则（零误配优先 / 平台区取最高 / 不可分离时如实返回）、扫描表单调性 |
+| `test_db_migrations.py` | 迁移一致性：**迁移脚本产出的表结构 = 模型快照**（autogenerate 无差异）、`rate_limit_counters` 等自管表被正确排除、存量库 stamp 不重跑 DDL |
 
 ### 前端
 
@@ -586,12 +591,16 @@ npm run test        # vitest（happy-dom 环境）
 npm run typecheck   # tsc --noEmit
 ```
 
-当前 **37 passed**（3 个测试文件）：
+当前 **61 passed**（7 个测试文件）：
 
 | 测试文件 | 关注点 |
 |---|---|
 | `src/common.test.ts` | 时间格式化 / 逾期判定 / 分类状态标签兜底 / 置信度分档 |
 | `src/api.test.ts` | 请求构造、`detail` 错误透传、非 JSON 响应兜底、204 无响应体 |
+| `src/components/Dashboard.test.tsx` | 加载占位 → 统计卡片、接口错误卡片、类别分布条形图与空数据引导、卡片点击跳转 |
+| `src/components/Notices.test.tsx` | 类别中文标签与置信度、待复核高亮、筛选参数透传、人工修正提交（时间保持 naive）、保存失败停留编辑态 |
+| `src/components/Tasks.test.tsx` | 分列计数、**逾期标红**（已完成不标）、状态流转刷新、**删除二次确认**、新建以 naive 本地时间提交（回归 500 缺陷）、编辑模态、错误卡片 |
+| `src/components/Upload.test.tsx` | 空文本拦截、粘贴文本成功链路（文档 + 通知 + 待办）、重复通知警示、低置信度提示复核、文件上传、错误卡片 |
 | `src/components/Search.test.tsx` | snippet 优先与摘要去重、`[1]` 引用高亮、命中来源徽章、降级提示、错误态、模式切换清空结果、两种空态文案（阈值过滤 vs 库内无）、**缓存命中徽章** |
 
 ### 离线评测
@@ -686,5 +695,6 @@ docker compose up --build
 - **检索质量门禁的容差是 0.005**，基线用确定性的 `local_hash` 向量记录。
   换 embedding 后端或调权重后指标必然变化，那不算劣化，需人工确认后 `--update-baseline`。
 - Mock VLM 为规则实现，对排版规整的正式通知效果最好；复杂海报建议接入真实视觉大模型。
-- 生产 PostgreSQL 尚未内置 Alembic 迁移，目前用 `create_all`；规模化前建议补迁移。
-- 前端自动化测试覆盖 **3 个文件 / 37 条用例**，聚焦纯逻辑与关键组件；整页渲染改动仍依赖人工验证 + 端到端截图。
+- 数据库迁移已由 **Alembic** 接管：启动时自动 `upgrade`，`create_all` 时代的存量库自动 `stamp` 打基线、不重跑 DDL。
+  仍需注意：改过 ORM 模型后要**生成新的迁移脚本**，否则脚本会落后于模型 —— `test_db_migrations.py` 负责拦住这种漂移。
+- 前端自动化测试覆盖 **7 个文件 / 61 条用例**，覆盖 5 个视图的渲染与关键交互；整页视觉与真实数据联调仍依赖人工验证 + 端到端截图。
