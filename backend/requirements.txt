@@ -2,6 +2,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 sqlalchemy>=2.0
+alembic>=1.14            # 数据库迁移（启动时自动应用，见 app/db_migrations.py）
 pydantic>=2.7
 pydantic-settings>=2.3
 python-multipart>=0.0.9

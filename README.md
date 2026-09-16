@@ -54,7 +54,9 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
 | **限流计数持久化** | 日计数写 SQLite（WAL，**88.8µs/请求**）：4 个真实子进程共享额度 40 实测**每次恰好放行 40 次**、重启不清零 | `pytest tests/test_rate_limit_persistence.py` |
 | **问答缓存语义复用** | 字面归一化之外再加查询向量近邻判定：改写问法的复用率 **1/10 → 6/10**，阈值经 22 对标注样本实测标定（**零误配**）、可配置、可回滚 | `python -m eval.run_cache_threshold_eval` |
-| **检索与评测** | 后端 **361 passed**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **检索与评测** | 后端 **366 passed**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例微平均 F1 **0.98** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **数据库迁移** | 引入 Alembic：启动自动 `upgrade`，`create_all` 存量库自动 `stamp` 打基线、数据不丢；迁移一致性测试保证「迁移脚本 = 模型快照」永不漂移 | `alembic upgrade head`、`pytest tests/test_db_migrations.py` |
+| **前端测试覆盖** | vitest + Testing Library 覆盖 Dashboard/Tasks/Notices/Upload/Search/API 工具，**61 passed**（含逾期标红、二次确认、naive 时间 bug 回归）；tsc + 生产构建全绿 | `npm run test` |
 | **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
 
 ---
@@ -627,7 +629,7 @@ python -m eval.run_cache_threshold_eval --embedding local_hash --gate
 
 | Job | 内容 |
 |---|---|
-| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check`（E/F/W/BLE/RUF100/I/B/UP/SIM 静态检查）→ `pytest -q` → **检索质量门禁** `eval.run_retrieval_eval --gate` → **缓存阈值门禁** `eval.run_cache_threshold_eval --gate` |
+| `backend` | Python 3.13 + `requirements-ci.txt` → `ruff check app tests eval scripts alembic`（E/F/W/BLE/RUF100/I/B/UP/SIM 静态检查）→ `pytest -q` → **检索质量门禁** `eval.run_retrieval_eval --gate` → **缓存阈值门禁** `eval.run_cache_threshold_eval --gate` |
 | `frontend` | Node 22 + `npm ci` → `npx tsc --noEmit` → `npm run test` → `npm run build` |
 
 设计取舍：

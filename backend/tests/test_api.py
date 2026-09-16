@@ -29,6 +29,25 @@ def test_health(client: TestClient) -> None:
     assert "provider" in body["vlm"]
 
 
+def test_health_api_alias(client: TestClient) -> None:
+    """/api/health 必须与 /health 等价（同一实现、同一响应体）。
+
+    线上前端把 VITE_API_BASE 配成 ".../api"，健康检查就会打到 /api/health
+    （frontend/src/api.ts 里 HEALTH = `${VITE_API_BASE}/health`）。
+    缺这条别名时线上返回 404，前端 catch 降级成 status="error"、能力全为 "?"，
+    侧边栏显示"后端异常"——而本地开发因 VITE_API_BASE 未设置（走 vite 代理的
+    "/health"）永远测不出来。故用测试钉住两条路径的一致性。
+    """
+    alias = client.get("/api/health")
+    assert alias.status_code == 200, alias.text
+
+    root = client.get("/health").json()
+    body = alias.json()
+    assert body["status"] == "ok"
+    # 逐字段等价，防止将来只改一处实现导致两条路径漂移
+    assert body == root
+
+
 def test_health_reports_cache_and_rate_limit(client: TestClient) -> None:
     """/health 必须暴露缓存与限流的运行时状态（演示排障出口）。
 

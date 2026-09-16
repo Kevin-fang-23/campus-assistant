@@ -75,6 +75,7 @@ def _limits(monkeypatch, *, per_min=0, per_ip_day=0, per_day=0, tier="qa"):
     ("/api/tasks/1", "default"),
     ("/api/search", "default"),
     ("/health", None),                     # 监控探针不能被限流
+    ("/api/health", None),                 # /health 的别名（前端线上按 /api 前缀拼），同理豁免
     ("/docs", None),
     ("/openapi.json", None),
     ("/assets/index-abc.js", None),        # 静态资源：一次页面加载几十个请求

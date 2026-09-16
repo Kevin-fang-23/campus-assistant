@@ -101,6 +101,12 @@ def tier_for(path: str) -> str | None:
     """
     if not path.startswith("/api"):
         return None
+    # /api/health 是 /health 的别名（前端在线上按 VITE_API_BASE=".../api" 拼出来），
+    # 属探活而非业务调用：每次打开页面都会请求一次，且招聘官集中访问时容易撞上
+    # default 层的分钟额度。被限流会让前端把健康的后端显示成异常，是假故障源，
+    # 故与 /health 一样豁免。
+    if path == "/api/health":
+        return None
     for prefix, name in _TIER_BY_PREFIX:
         if path.startswith(prefix):
             return name

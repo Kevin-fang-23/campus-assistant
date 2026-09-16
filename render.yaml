@@ -16,6 +16,14 @@ services:
       - key: CORS_ORIGINS
         value: "https://campus-assistant.vercel.app"
         sync: false
+      # 镜像装的是精简依赖（backend/requirements-deploy.txt，已排除 500MB+ 的
+      # paddleocr/paddlepaddle，免费层装它会构建超时或启动 OOM）。
+      # 因此显式指定轻量引擎，不让 auto 去探测未安装的 paddle：
+      #   rapid —— 用 rapidocr-onnxruntime，图片文字识别可演示（默认）
+      #   stub  —— 连 rapidocr 也不装时用；图片识别返回空，文本/PDF 链路不受影响
+      - key: OCR_PROVIDER
+        value: "rapid"
+        sync: false
       # 演示用 SQLite 即可；若需数据持久化，在 Render 加 PostgreSQL 插件并把下面这行填上
       # - key: DATABASE_URL
       #   value: postgresql+psycopg://user:password@host:5432/campus

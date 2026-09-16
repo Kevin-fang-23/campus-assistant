@@ -204,7 +204,15 @@ app.include_router(search.router)
 app.include_router(qa.router)
 
 
+# 两条路径共用同一实现：
+#  · /health      —— 云平台探活（render.yaml 的 healthCheckPath）；
+#  · /api/health  —— 前端用。业务端点全在 /api/* 下，线上把 VITE_API_BASE
+#                    配成 ".../api" 后前端会请求 /api/health（见 frontend/src/api.ts
+#                    的 HEALTH 拼接）；缺这条别名线上就是 404，侧边栏显示后端异常。
+#                    本地测不出来：VITE_API_BASE 未设置时走 vite 代理的 "/health"。
+# 别名不进 OpenAPI 文档，避免同一接口在 /docs 里重复出现。
 @app.get("/health", tags=["meta"], summary="健康检查与运行时能力")
+@app.get("/api/health", tags=["meta"], include_in_schema=False)
 def health() -> dict:
     store = get_store()
     embedder = store.embedder

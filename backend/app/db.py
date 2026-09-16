@@ -51,7 +51,15 @@ def get_db() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    """开发期用 create_all；生产建议接 Alembic 迁移。"""
-    from . import models  # noqa: F401  确保模型已注册
+    """建表：优先走 Alembic 迁移，失败/未安装时回退 create_all。
 
-    Base.metadata.create_all(bind=engine)
+    - 全新库：迁移脚本建出全部表（DDL 与模型同源，见 alembic/versions/）；
+    - create_all 时代的存量库：自动打基线（stamp）而不重跑 DDL；
+    - 迁移不可用（未装 alembic / 执行失败）：create_all 兜底，
+      保证「最小依赖也能启动」的承诺不被运维工具绑架。
+    """
+    from . import models  # noqa: F401  确保模型已注册
+    from .db_migrations import apply_migrations
+
+    if not apply_migrations(engine):
+        Base.metadata.create_all(bind=engine)

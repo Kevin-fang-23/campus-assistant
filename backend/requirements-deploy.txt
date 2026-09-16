@@ -1,0 +1,41 @@
+# 云端部署依赖集（Render / Railway / Fly.io 等免费层）
+#
+# 与 requirements.txt 的差异：**排除 paddleocr / paddlepaddle**
+#   - paddlepaddle 单个包体 500MB+，还会连带拉进 opencv 等一系列重依赖；
+#   - 免费实例通常只有 512MB 内存 + 构建时限，装它大概率超时或启动时 OOM 重启。
+#
+# 为什么排除后图片识别仍可演示：
+#   保留 rapidocr-onnxruntime（几十 MB 量级，基于 onnxruntime）。
+#   部署时把 OCR_PROVIDER 设为 `rapid`，直接命中它，不去探测未安装的 paddle
+#   （auto 模式也能自动降级到 rapid，只是多打一条不可用日志、启动略慢）。
+#
+# 若连 rapidocr 也想省（追求最快构建）：删掉它并把 OCR_PROVIDER 设为 `stub`。
+#   代价是图片文字识别返回空（providers/ocr.py 的 StubOCR 会明确给出 warning），
+#   文本与 PDF 链路不受影响。
+#
+# 保留 faiss / langgraph：它们是生产路径下真正生效的后端（向量索引、流水线编排），
+#   虽有 numpy / 顺序执行兜底，但只跑兜底路径会掩盖生产路径缺陷；且安装成本低。
+# 保留 psycopg：体积小，便于演示后临时切 PostgreSQL 做数据持久化。
+# 不含 pytest / ruff：测试与静态检查由 CI 用 requirements-ci.txt 负责，不进运行时镜像。
+#
+# ⚠️ 维护约定：requirements.txt 新增**核心**依赖时，这里同步加一行；
+#    仅新增可选重引擎（paddle 等）时不必。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0
+pydantic>=2.7
+pydantic-settings>=2.3
+python-multipart>=0.0.9
+pymupdf>=1.24          # PDF 文本层抽取 + 扫描页转图
+numpy>=1.26
+httpx>=0.27            # VLM / Embedding HTTP 调用
+pillow>=10.0
+
+# --- 生产路径（非兜底）依赖 ---
+langgraph>=0.2         # 流水线编排；缺失时退化为顺序执行（逻辑等价）
+faiss-cpu>=1.8         # 向量索引；缺失时退化为 numpy 余弦相似度
+psycopg[binary]>=3.1   # 需切 PostgreSQL 时启用；默认 SQLite 不触达
+
+# --- 轻量 OCR 引擎（替代 paddle 全家桶）---
+rapidocr-onnxruntime>=1.3
