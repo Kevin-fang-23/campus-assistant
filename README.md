@@ -54,7 +54,7 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 | **三层请求限流** | 分钟级 / 每 IP 日 / 全局日，防止公网演示烧干额度 | `.env` 的 `RATE_LIMIT_*` |
 | **限流计数持久化** | 日计数写 SQLite（WAL，**88.8µs/请求**）：4 个真实子进程共享额度 40 实测**每次恰好放行 40 次**、重启不清零 | `pytest tests/test_rate_limit_persistence.py` |
 | **问答缓存语义复用** | 字面归一化之外再加查询向量近邻判定：改写问法的复用率 **1/10 → 6/10**，阈值经 22 对标注样本实测标定（**零误配**）、可配置、可回滚 | `python -m eval.run_cache_threshold_eval` |
-| **检索与评测** | 后端 **366 passed / 17 个测试模块**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例：分类准确率 **40/40**、6 字段微平均 F1 **0.92** | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
+| **检索与评测** | 后端 **366 passed / 17 个测试模块**；检索质量门禁 + 缓存阈值门禁接入 CI（MRR@5 基线 **0.9587**，劣化即 fail）；抽取评测 40 案例分类准确率 **40/40**，6 字段微平均 F1 **规则兜底层 0.98 / VLM 路径 0.93**（两条口径不同，见「抽取评测的两个口径」） | `pytest -q`、`python -m eval.run_retrieval_eval --gate` |
 | **数据库迁移** | 引入 Alembic：启动自动 `upgrade`，`create_all` 存量库自动 `stamp` 打基线、数据不丢；迁移一致性测试保证「迁移脚本 = 模型快照」永不漂移 | `alembic upgrade head`、`pytest tests/test_db_migrations.py` |
 | **前端测试覆盖** | vitest + Testing Library 覆盖 Dashboard/Tasks/Notices/Upload/Search/API 工具，**61 passed**（含逾期标红、二次确认、naive 时间 bug 回归）；tsc + 生产构建全绿 | `npm run test` |
 | **CI** | 每次推送自动跑后端测试 + 检索质量门禁 + 前端类型检查与构建（无需任何密钥） | 见上方 CI 徽章、`.github/workflows/ci.yml` |
@@ -607,7 +607,9 @@ npm run typecheck   # tsc --noEmit
 
 ```bash
 # 抽取质量（40 条案例：分类准确率 + 6 字段 P/R/F1）
-python -m eval.run_eval
+# 注意：不指定 VLM_PROVIDER 时会读本机 .env，两条口径结果不同，见下方说明
+VLM_PROVIDER=mock EMBEDDING_PROVIDER=local_hash python -m eval.run_eval   # 规则兜底层
+python -m eval.run_eval                                                   # VLM 路径（需 Key）
 
 # 检索质量（55 条语料 / 129 条查询：Recall@k / MRR@5 / nDCG@5）
 python -m eval.run_retrieval_eval --embedding dashscope --sweep
@@ -631,6 +633,21 @@ python -m eval.run_cache_threshold_eval --embedding local_hash --gate
 基线快照与结论见 `backend/eval/` 下的 `BASELINE_*.md`、`RETRIEVAL_BASELINE.md`、
 `CACHE_SEMANTIC_BASELINE.md`，供机器比对的门禁基线是 `backend/eval/baseline.json`
 （需随代码一起提交）。
+
+#### ⚠️ 抽取评测有两个口径，别混用
+
+`run_eval.py` 走的是 `app/graph/pipeline.py` 的**真实流水线**，因此它测的是
+「**当前配置下实际生效的那条抽取路径**」—— 而这件事由 `VLM_PROVIDER` 决定。
+不显式指定时，它会读你本机 `.env`，于是同一句命令在不同机器上给出不同数字：
+
+| 口径 | 命令 | 微平均 F1（P / R） | 备注 |
+|---|---|---|---|
+| **VLM 路径**（需 API Key） | `python -m eval.run_eval`（`.env` 里 `VLM_PROVIDER=dashscope`） | **0.93**（0.89 / 0.97） | 分类 40/40；逐字段 F1：`issuer` **0.78**、`event_time` **0.79**、`location` 0.92 是主要失分点（时间字段另有 3 条漏抽、5 条过抽） |
+| **规则兜底层**（纯离线） | `VLM_PROVIDER=mock EMBEDDING_PROVIDER=local_hash python -m eval.run_eval` | **0.98**（0.98 / 0.98） | 分类 40/40；`issuer`/`location`/`course` 均 1.00，仅 `event_time` 0.92；残余 3 条 miss 见 `BASELINE_AFTER.md` 第 4 节 |
+
+**为什么规则层反而更高**：规则抽取的字段边界是**人工按这 40 条案例打磨过**的（`BASELINE_AFTER.md` 记录了 RC1–RC5 五类根因的修复过程），而 VLM 在时间字段上会**过度抽取**（把「下午」这类修饰也填进 `event_time`），
+所以两边的失分点并不重叠。这不代表「规则比 VLM 强」—— 案例集只有 40 条且规则是针对它调优的，
+换一批真实通知排版，规则的正则覆盖会率先失效。**写简历/答辩时若引用这个指标，必须同时说明是哪条路径。**
 
 ### 持续集成（CI）
 
@@ -695,6 +712,10 @@ docker compose up --build
 - **检索质量门禁的容差是 0.005**，基线用确定性的 `local_hash` 向量记录。
   换 embedding 后端或调权重后指标必然变化，那不算劣化，需人工确认后 `--update-baseline`。
 - Mock VLM 为规则实现，对排版规整的正式通知效果最好；复杂海报建议接入真实视觉大模型。
+- **抽取评测的指标取决于 `VLM_PROVIDER`**：同一句 `python -m eval.run_eval` 在 `.env` 配了
+  `dashscope` 的机器上得到 0.93，在纯离线（`VLM_PROVIDER=mock`）机器上得到 0.98。
+  引用这个数字时必须说明是哪条路径；两者失分点不同（VLM 时间字段过抽 / 规则层跨年与晨昏误判），
+  详见「抽取评测的两个口径」与 `eval/BASELINE_AFTER.md` 第 4 节。
 - 数据库迁移已由 **Alembic** 接管：启动时自动 `upgrade`，`create_all` 时代的存量库自动 `stamp` 打基线、不重跑 DDL。
   仍需注意：改过 ORM 模型后要**生成新的迁移脚本**，否则脚本会落后于模型 —— `test_db_migrations.py` 负责拦住这种漂移。
 - 前端自动化测试覆盖 **7 个文件 / 61 条用例**，覆盖 5 个视图的渲染与关键交互；整页视觉与真实数据联调仍依赖人工验证 + 端到端截图。
