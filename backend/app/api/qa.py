@@ -55,7 +55,7 @@ from ..providers.llm_client import (
     build_client_from_settings,
 )
 from ..schemas import AnswerOut, CitationOut, QAIn
-from ..services.hybrid import hybrid_search
+from ..services.hybrid import hybrid_search, hybrid_search_filtered
 from ..services.notice_text import (
     CONTEXT_MAX_CHARS,
     SNIPPET_MAX_CHARS,
@@ -133,7 +133,19 @@ def _build_answer(
     store = get_store()
     # 混合检索（向量 + BM25 加权融合）：问答的召回质量直接决定回答质量，
     # 精确串（课程名/房间号/手机号）靠 BM25 兜住，语义相近靠向量兜住。
-    hits = hybrid_search(payload.query, payload.top_k, query_vector=query_vector)
+    #
+    # 相关性阈值（qa_relevance_filter，默认开）：与 /api/search 共用同一
+    # 「共享二字词」判定。此前问答路不过滤，无关问题也会把 top-k 通知拼进
+    # context 烧一次 LLM，只为得到一句"材料里没有"；过滤后候选全被丢弃时
+    # 直接走下面的空召回分支，LLM 调用整个省掉。关掉即回滚旧行为。
+    # query_vector 透传复用：语义缓存探测算过的向量在这里继续用，
+    # 整条链路仍然只有一次 embedding 调用。
+    if settings.qa_relevance_filter:
+        hits, _filtered = hybrid_search_filtered(
+            db, payload.query, payload.top_k, query_vector=query_vector
+        )
+    else:
+        hits = hybrid_search(payload.query, payload.top_k, query_vector=query_vector)
 
     # 批量取通知与文本：逐条 db.get 是 N+1（top_k=5 时 ~10 次查询），
     # 批量后固定 2 次；snippet/context 的选片逻辑不变（select_snippet/context 纯函数）。

@@ -193,6 +193,13 @@ class SearchIn(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=20)
 
+    @field_validator("query")
+    @classmethod
+    def _reject_blank_query(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("查询内容不能为空白")
+        return v
+
 
 class SearchHit(BaseModel):
     notice_id: int
@@ -229,6 +236,16 @@ class SearchOut(BaseModel):
 class QAIn(BaseModel):
     query: str = Field(min_length=1)
     top_k: int = Field(default=5, ge=1, le=20)
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank_query(cls, v: str) -> str:
+        # `min_length=1` 挡不住纯空白（如 " "）：空白 query 经混合检索会拿到
+        # 全 0 分的任意 top-k 文档，问答路径还会为它白烧一次 LLM 调用。
+        # 在 schema 层拒绝，让 /api/qa 与 /api/search 一致地返回 422。
+        if not v.strip():
+            raise ValueError("问题内容不能为空白")
+        return v
 
 
 class CitationOut(BaseModel):

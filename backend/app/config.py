@@ -131,10 +131,6 @@ class Settings(BaseSettings):
     # 多实例（多台机器）部署时 SQLite 文件无法共享，需换 Redis —— 见
     # app/services/rate_limit_store.py 的 CountStore 协议。
     rate_limit_store: str = "sqlite"
-    # ⚠️ 已废弃，保留仅为兼容旧 .env（改了不影响任何行为）。
-    # 日计数现在是「判定即读库、记账即写库」，不存在批量刷盘，
-    # 因此没有「刷盘间隔」这个可调项，也就没有「重启丢一个间隔」的窗口。
-    rate_limit_flush_interval: float = 1.0
 
     # ---- OCR ----
     # auto: paddleocr -> rapidocr -> vlm -> stub 依次探测
@@ -209,6 +205,16 @@ class Settings(BaseSettings):
     # 阈值判定失败时是否仍然返回原始结果。True = 只标记不丢弃（便于灰度观察），
     # False = 真正丢弃（默认，产品语义是"没找到就别硬凑"）。
     search_keep_if_filtered: bool = False
+
+    # ---- /api/qa 是否复用同一相关性阈值 ----
+    # 此前问答路不过滤：问"今天天气怎么样"也会把 top-k 通知拼进 context 交给
+    # LLM，靠 system prompt 约束"未找到"——与 /api/search 的行为不一致，
+    # 且无关问题照样烧一次 LLM（只为得到一句"材料里没有"）。
+    # 开启后问答复用「共享二字词 ≥ SEARCH_MIN_BIGRAM_OVERLAP」判定：
+    # 候选全部被过滤时直接返回「知识库中暂时没有相关通知」，不再调用 LLM。
+    # 误杀风险与检索路同源：T=1 时真实查询误杀 0/129（实测，
+    # 见 eval/RETRIEVAL_BASELINE.md 第五节）。false = 回滚为旧行为。
+    qa_relevance_filter: bool = True
 
     # ---- 待办生成 ----
     remind_lead_hours: int = 24               # 截止前多久提醒

@@ -3,42 +3,10 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
-try:
-    from fastapi import FastAPI
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.staticfiles import StaticFiles
-except ModuleNotFoundError:  # pragma: no cover - only for static analysis / minimal envs
-    class _Router:
-        def add_api_route(self, *args, **kwargs):
-            return None
-
-    class _FastAPI:
-        def __init__(self, *args, **kwargs):
-            self.router = _Router()
-
-        def add_middleware(self, *args, **kwargs):
-            return None
-
-        def include_router(self, *args, **kwargs):
-            return None
-
-        def get(self, *args, **kwargs):
-            def decorator(func):
-                return func
-
-            return decorator
-
-    class CORSMiddleware:  # type: ignore[no-redef]
-        def __init__(self, *args, **kwargs):
-            pass
-
-    class StaticFiles:  # type: ignore[no-redef]
-        def __init__(self, *args, **kwargs):
-            pass
-
-    FastAPI = _FastAPI
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .api import documents, notices, qa, search, tasks
 from .config import settings
@@ -94,7 +62,7 @@ def _attach_rate_limit_store() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: Any):
+async def lifespan(app: FastAPI):
     init_db()
     _attach_rate_limit_store()
     # 首次构造缓存单例时把 .env 的 TTL / 容量配置带上。

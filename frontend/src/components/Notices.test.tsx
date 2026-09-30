@@ -116,6 +116,22 @@ describe("Notices 通知复核", () => {
     expect(patch.deadline).toBe("2026-10-01T16:12:00");
   });
 
+  it("清空可选字段提交 null，使后端真正清空该字段", async () => {
+    // 回归：曾用 `|| undefined` 表示空值，JSON.stringify 会把 undefined 键
+    // 整个丢掉，后端 exclude_unset 看不到 → 旧值保留，清空地点/发布方永远不生效。
+    mockedListNotices.mockResolvedValue([makeNotice({ id: 5, issuer: "教务处" })]);
+    mockedUpdateNotice.mockResolvedValue(makeNotice({ id: 5 }));
+    const user = userEvent.setup();
+    render(<Notices />);
+
+    await user.click(await screen.findByRole("button", { name: "人工修正" }));
+    await user.clear(screen.getByDisplayValue("教务处"));
+    await user.click(screen.getByRole("button", { name: "保存并重算待办" }));
+
+    const [, patch] = mockedUpdateNotice.mock.calls[0];
+    expect(patch.issuer).toBeNull();
+  });
+
   it("保存失败时展示错误并停留在编辑态", async () => {
     mockedListNotices.mockResolvedValue([makeNotice({ id: 4 })]);
     mockedUpdateNotice.mockRejectedValue(new Error("422 字段校验失败"));

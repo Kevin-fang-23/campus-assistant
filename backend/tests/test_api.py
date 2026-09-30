@@ -115,6 +115,64 @@ def test_upload_internal_error_does_not_leak_details(client: TestClient, monkeyp
     assert resp.json()["detail"] == "处理失败，请稍后重试或联系管理员"
 
 
+def test_upload_oversized_file_rejected_with_413(client: TestClient, monkeypatch) -> None:
+    """上传超限必须早停（413），而不是把整个请求体读进内存后才检查。
+
+    边读边计量把内存占用钉在「上限 + 一个分块」；这里把上限调小以便
+    用小文件触发同一分支。
+    """
+    from app.api import documents as documents_api
+
+    monkeypatch.setattr(documents_api, "MAX_UPLOAD_BYTES", 10)
+    files = {"file": ("big.txt", io.BytesIO(b"x" * 64), "text/plain")}
+    resp = client.post("/api/documents/upload", files=files)
+    assert resp.status_code == 413, f"应被 413 拒绝，实际 {resp.status_code}"
+    assert "限制" in resp.json()["detail"]
+
+    # 正常大小不受影响
+    files = {"file": ("ok.txt", io.BytesIO(b"hello"), "text/plain")}
+    assert client.post("/api/documents/upload", files=files).status_code == 200
+
+
+def test_blank_query_is_rejected_with_422(client: TestClient) -> None:
+    """纯空白 query 会通过 min_length=1，但检索/问答对它毫无意义：
+    混合检索对空串返回全 0 分的任意文档，/api/qa 还会为它白烧一次 LLM。
+    schema 层直接拒绝，问答与检索行为一致。
+    """
+    for payload in ({"query": "   ", "top_k": 3}, {"query": "\t\n", "top_k": 3}):
+        resp = client.post("/api/qa", json=payload)
+        assert resp.status_code == 422, f"空白 query 应 422，实际 {resp.status_code}"
+    assert client.post("/api/search", json={"query": " "}).status_code == 422
+    # 带首尾空白的正常 query 不受影响（只拒绝 strip 后为空的）
+    resp = client.post("/api/search", json={"query": "  操作系统  "})
+    assert resp.status_code == 200
+
+
+def test_qa_relevance_filter_skips_llm_for_offtopic_query(
+    client: TestClient, monkeypatch
+) -> None:
+    """qa_relevance_filter=True（默认）时，与语料零字面重叠的问题不进 LLM。
+
+    与 /api/search 的行为对齐：候选全被相关性阈值判为无关 → 直接返回
+    「知识库中暂时没有…」，LLM 调用整个省掉；关掉开关即回滚旧行为
+    （恒返回 top-k，引用非空）。
+    """
+    from app.config import settings
+
+    off_topic = "今天天气怎么样"
+    r = client.post("/api/qa", json={"query": off_topic, "top_k": 3})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["citations"] == [], "无关问题不应携带引用"
+    assert "知识库中暂时没有" in body["answer"]
+    assert body["degraded"] is True
+
+    # 回滚开关：关掉过滤恢复旧行为（恒 top-k，引用非空）
+    monkeypatch.setattr(settings, "qa_relevance_filter", False)
+    r2 = client.post("/api/qa", json={"query": off_topic, "top_k": 3}).json()
+    assert r2["citations"], "关闭过滤应回滚为恒返回 top-k"
+
+
 def test_task_status_flow_and_timeline(client: TestClient) -> None:
     tasks = client.get("/api/tasks", params={"category": "homework"}).json()
     assert tasks

@@ -75,9 +75,11 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import settings
+from ..models import Document, Notice
 from .bm25 import get_bm25_index, tokenize
 from .vector_store import get_store
 
@@ -299,33 +301,23 @@ def hybrid_search(
 # ---------------------------------------------------------------------------
 # 带相关性判定的检索入口（供 API 使用）
 # ---------------------------------------------------------------------------
-def search_docs_text(db: Session, notice_ids: list[int]) -> dict[int, str]:
-    """批量取出若干通知的**索引文本**（等价 BM25 路文本），用于相关性判定。
+def bm25_texts_bulk(db: Session, notices) -> dict[int, str]:
+    """批量构造 BM25 索引文本（notice_id → 文本）。
 
-    必须与 `bm25_text` 一致：判定要看的正是"检索时到底比对了什么字符串"，
-    若这里换成 title 或 summary，就会出现"检索命中但判定说无关"的割裂。
+    拼接规则与单条版 bm25_text 是**同一份实现**（build_text + 文档正文）——
+    索引文本与相关性判定必须逐字一致，因此这里只允许一处拼接逻辑，
+    单条版只是它的委托。批量版把「每条通知一次 db.get(Document)」的 N+1
+    收敛成一次 IN 查询：rebuild_bm25 在启动时对全库调用，语料大时差距明显。
     """
-    if not notice_ids:
-        return {}
-    from sqlalchemy import select
-
-    from ..models import Document, Notice
-
-    rows = (
-        db.execute(select(Notice).where(Notice.id.in_(notice_ids))).scalars().all()
-    )
-    # 先把用到的正文一次性捞出来，避免逐条 db.get 造成 N+1
-    doc_ids = [n.document_id for n in rows if n.document_id]
+    doc_ids = {n.document_id for n in notices if n.document_id}
     raws: dict[int, str] = {}
     if doc_ids:
-        docs = (
-            db.execute(select(Document).where(Document.id.in_(doc_ids))).scalars().all()
-        )
-        raws = {d.id: d.raw_text or "" for d in docs}
+        docs = db.execute(select(Document).where(Document.id.in_(doc_ids))).scalars().all()
+        raws = {d.id: (d.raw_text or "") for d in docs}
 
     base_text = get_store().build_text
     out: dict[int, str] = {}
-    for n in rows:
+    for n in notices:
         parts = [base_text(n)]
         raw = raws.get(n.document_id) if n.document_id else None
         if raw:
@@ -334,18 +326,38 @@ def search_docs_text(db: Session, notice_ids: list[int]) -> dict[int, str]:
     return out
 
 
+def search_docs_text(db: Session, notice_ids: list[int]) -> dict[int, str]:
+    """批量取出若干通知的**索引文本**（等价 BM25 路文本），用于相关性判定。
+
+    必须与 `bm25_text` 一致：判定要看的正是"检索时到底比对了什么字符串"，
+    若这里换成 title 或 summary，就会出现"检索命中但判定说无关"的割裂。
+    现在两者直接共用 `bm25_texts_bulk` 这一份实现，一致性由构造保证。
+    """
+    if not notice_ids:
+        return {}
+    rows = db.execute(select(Notice).where(Notice.id.in_(notice_ids))).scalars().all()
+    return bm25_texts_bulk(db, rows)
+
+
 def hybrid_search_filtered(
-    db: Session, query: str, top_k: int | None = None
+    db: Session,
+    query: str,
+    top_k: int | None = None,
+    *,
+    query_vector: np.ndarray | None = None,
 ) -> tuple[list[RetrievalHit], bool]:
     """混合检索 + 相关性阈值过滤，返回 (命中, 是否有命中被过滤)。
 
     多召回一些再过滤：若直接按 top_k 取，过滤后可能只剩 1 条，
     而其实第 k+1 条是相关的。因此候选池取 `hybrid_fetch_k`，过滤完再截断。
+
+    `query_vector`：语义与 `hybrid_search` 相同 —— 调用方已算过查询向量时
+    传进来复用（目前是 /api/qa：语义缓存探测算过一次，这里与检索共用）。
     """
     k = top_k or settings.search_top_k
     # 阈值开启时多取候选，避免"过滤后不足 top_k 但后面其实有相关结果"
     fetch = max(settings.hybrid_fetch_k, k) if settings.search_min_bigram_overlap > 0 else k
-    hits = hybrid_search(query, fetch)
+    hits = hybrid_search(query, fetch, query_vector=query_vector)
     texts = search_docs_text(db, [h.notice_id for h in hits])
     kept, filtered = filter_by_relevance(hits, query, texts)
     return kept[:k], filtered
@@ -355,7 +367,7 @@ def hybrid_search_filtered(
 # 索引写入
 # ---------------------------------------------------------------------------
 def bm25_text(db: Session, notice) -> str:
-    """BM25 索引的文本 = 结构化字段 **+ 文档正文**。
+    """BM25 索引的文本 = 结构化字段 **+ 文档正文**（单条版，委托批量实现）。
 
     为什么必须带正文（这是端到端测试抓出来的缺陷）：
     只索引 `build_text`（标题/摘要/课程/地点/标签）时，**正文里的精确串搜不到**。
@@ -367,13 +379,7 @@ def bm25_text(db: Session, notice) -> str:
     且改动它需要重算全库向量。**两路不必用同一份文本** ——
     RRF 只用排名，不需要两路分数可比；各自索引自己擅长的那部分才对。
     """
-    from ..models import Document
-
-    parts = [get_store().build_text(notice)]
-    document = db.get(Document, notice.document_id)
-    if document is not None and document.raw_text:
-        parts.append(document.raw_text)
-    return "\n".join(p for p in parts if p)
+    return bm25_texts_bulk(db, [notice])[notice.id]
 
 
 def index_notice(db: Session, notice) -> None:
@@ -389,13 +395,12 @@ def index_notice(db: Session, notice) -> None:
 
 
 def rebuild_bm25(db: Session) -> int:
-    """按库内通知重建 BM25 索引（启动、重算向量后调用）。"""
-    from sqlalchemy import select
+    """按库内通知重建 BM25 索引（启动、重算向量后调用）。
 
-    from ..models import Notice
-
+    文本走批量预取：全库重建时不再逐条 `db.get(Document)`（N+1 → 1 次 IN 查询）。
+    """
     rows = db.execute(select(Notice).order_by(Notice.id)).scalars().all()
-    return get_bm25_index().load_documents((n.id, bm25_text(db, n)) for n in rows)
+    return get_bm25_index().load_documents(bm25_texts_bulk(db, rows).items())
 
 
 def reindex_all(db: Session) -> tuple[int, int]:

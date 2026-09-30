@@ -10,21 +10,35 @@ from starlette.concurrency import run_in_threadpool
 from ..db import get_db
 from ..models import Document
 from ..schemas import DocumentOut, IngestResult, TextIngestIn
-from ..services.ingest import ingest_bytes, ingest_text
+from ..services.ingest import MAX_UPLOAD_BYTES, ingest_bytes, ingest_text
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
 
+# 分块读取大小：内存占用被钉在「上传上限 + 一个分块」，而不是整个请求体
+_READ_CHUNK = 1024 * 1024
+
 
 @router.post("/upload", response_model=IngestResult, summary="上传图片/PDF/文本并跑完整链路")
 async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)) -> IngestResult:
-    data = await file.read()
+    # 边读边计量，而不是 `await file.read()` 一次读完再检查：
+    # 后者会把整个请求体读进内存后才轮到 ingest_bytes 的大小检查，
+    # 单个超大请求（如数 GB）先撑内存再被拒。分块读取、超限立即 413。
+    # ingest_bytes 内部的同款检查保留作纵深防御（/text 等其他入口仍靠它）。
+    data = bytearray()
+    while chunk := await file.read(_READ_CHUNK):
+        data.extend(chunk)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"文件超过 {MAX_UPLOAD_BYTES // 1024 // 1024}MB 限制",
+            )
     try:
         # ingest_bytes 是同步阻塞的（文件 I/O / 数据库 / VLM / OCR），
         # 直接在 async 端点里调会卡住事件循环，期间所有其它请求（含 /health）
         # 都得等它跑完。丢进线程池执行，事件循环保持响应。
         return await run_in_threadpool(
-            ingest_bytes, db, data, file.filename or "upload.bin", mime=file.content_type
+            ingest_bytes, db, bytes(data), file.filename or "upload.bin", mime=file.content_type
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

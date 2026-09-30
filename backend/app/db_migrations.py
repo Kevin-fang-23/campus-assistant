@@ -51,7 +51,11 @@ def make_config(database_url: str):
 
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", database_url)
+    # ConfigParser 约定：值里的 % 是插值语法。Windows 下 sqlite 绝对路径经
+    # URL.render_as_string 后盘符冒号被编码成 %3A，直接写入会在读取时抛
+    # 「invalid interpolation syntax」；写成 %% 读取时还原回单个 %，
+    # 对不含 % 的 URL（Linux / PostgreSQL）是空操作。
+    cfg.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
     cfg.attributes["configure_logger"] = False
     return cfg
 

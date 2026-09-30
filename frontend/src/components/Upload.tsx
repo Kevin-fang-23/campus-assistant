@@ -147,7 +147,8 @@ function ResultView({ r }: { r: IngestResult }) {
 
         {r.duplicate && (
           <div className="banner warn">
-            ⚠️ 检测到重复通知（与 #{r.duplicate_of_id} 相似度 {r.dedup_score?.toFixed(2)}），已跳过建库。
+            ⚠️ 检测到重复通知（与 #{r.duplicate_of_id} 相似度 {r.dedup_score?.toFixed(2)}）：
+            通知仍入库备查，但已跳过待办生成。
           </div>
         )}
         {r.needs_review && (

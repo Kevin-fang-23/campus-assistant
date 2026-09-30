@@ -148,13 +148,17 @@ function EditCard({ notice, saving, setSaving, onCancel, onSaved }: EditProps) {
     setErr(null);
     setSaving(true);
     try {
+      // 可选字段的空值必须传 null，不能传 undefined：JSON.stringify 会把
+      // undefined 字段整个丢掉，后端 exclude_unset 就看不到该键 → 旧值保留，
+      // 用户「清空地点/发布方」永远不生效。title 例外——它是 NOT NULL 列，
+      // 清空时不提交（后端保留原标题），绝不能传 null（会触发 500）。
       const patch = {
         title: form.title.trim() || undefined,
         category: form.category,
-        issuer: form.issuer.trim() || undefined,
-        location: form.location.trim() || undefined,
-        course: form.course.trim() || undefined,
-        summary: form.summary.trim() || undefined,
+        issuer: form.issuer.trim() || null,
+        location: form.location.trim() || null,
+        course: form.course.trim() || null,
+        summary: form.summary.trim() || null,
         deadline: toApiDateTime(form.deadline),
         event_time: toApiDateTime(form.event_time),
         contacts: form.contacts

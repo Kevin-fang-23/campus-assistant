@@ -3,7 +3,7 @@
 分四层：
 1. `DailyCounter` 单元级 —— 直查存储、跨实例一致、时钟回拨安全
 2. `SqliteCountStore` —— 建表、WAL、原子自增、并发不丢更新
-3. `FileCountStore` / `InMemoryCountStore` —— 另两种后端
+3. `InMemoryCountStore` / `NullCountStore` —— 另两种后端
 4. `RateLimiter` 集成级 —— 这是清单 #8/#9 的直接验收
 
 ## 为什么这里有一条"反例"用例
@@ -33,7 +33,6 @@ from sqlalchemy import create_engine, text
 from app.services.rate_limit import RateLimiter
 from app.services.rate_limit_store import (
     DailyCounter,
-    FileCountStore,
     InMemoryCountStore,
     NullCountStore,
     SqliteCountStore,
@@ -77,11 +76,11 @@ def test_counter_defaults_to_zero(clock):
     assert c.used("global:qa", "2026-09-13") == 0
 
 
-def test_counter_bump_then_used_reflects_store(engine, clock):
+def test_counter_try_reserve_then_used_reflects_store(engine, clock):
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
     day = "2026-09-13"
-    assert c.bump("k", day) == 1
-    assert c.bump("k", day) == 2
+    assert c.try_reserve("k", day, limit=10) is True
+    assert c.try_reserve("k", day, limit=10) is True
     assert c.used("k", day) == 2
     # 绕过对象直接查库，确认不是内存假象
     with engine.connect() as conn:
@@ -109,7 +108,7 @@ def test_counter_survives_restart(engine, clock):
     day = "2026-09-13"
     c1 = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
     for _ in range(3):
-        c1.bump("global:qa", day)
+        assert c1.try_reserve("global:qa", day, limit=10) is True
     c2 = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
     assert c2.used("global:qa", day) == 3, "重启后计数丢失 —— #9 未修复"
 
@@ -117,18 +116,18 @@ def test_counter_survives_restart(engine, clock):
 def test_counter_isolates_keys(engine, clock):
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
     day = "2026-09-13"
-    c.bump("a", day)
-    c.bump("a", day)
-    c.bump("b", day)
+    c.try_reserve("a", day, limit=10)
+    c.try_reserve("a", day, limit=10)
+    c.try_reserve("b", day, limit=10)
     assert c.used("a", day) == 2
     assert c.used("b", day) == 1
 
 
 def test_counter_isolates_days(engine, clock):
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
-    c.bump("k", "2026-09-13")
-    c.bump("k", "2026-09-14")
-    c.bump("k", "2026-09-14")
+    c.try_reserve("k", "2026-09-13", limit=10)
+    c.try_reserve("k", "2026-09-14", limit=10)
+    c.try_reserve("k", "2026-09-14", limit=10)
     assert c.used("k", "2026-09-13") == 1
     assert c.used("k", "2026-09-14") == 2
 
@@ -139,8 +138,8 @@ def test_counter_clock_rollback_keeps_count(engine, clock):
     攻击者可等一次 NTP 校时来绕过每日上限，所以清理必须保留昨天。
     """
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
-    c.bump("k", "2026-09-13")
-    c.bump("k", "2026-09-13")
+    c.try_reserve("k", "2026-09-13", limit=10)
+    c.try_reserve("k", "2026-09-13", limit=10)
     for d in ["2026-09-14", "2026-09-13", "2026-09-14", "2026-09-13"]:
         c.used("k", d)
     assert c.used("k", "2026-09-13") == 2, "时钟回拨导致当天计数被清"
@@ -166,7 +165,7 @@ def test_counter_purge_keeps_yesterday_and_today(engine, clock):
 def test_counter_purge_runs_once_per_day(engine, clock, monkeypatch):
     """清理每天只做一次（否则每请求一次 DELETE，白白写盘）。
 
-    混合 used / bump 两种调用路径，确认两条路径共用同一个
+    混合 used / try_reserve 两种调用路径，确认两条路径共用同一个
     「今天已清理过」标记，不会各自触发一次。
     """
     store = SqliteCountStore(engine)
@@ -182,19 +181,19 @@ def test_counter_purge_runs_once_per_day(engine, clock, monkeypatch):
     for _ in range(5):
         c.used("k", "2026-09-13")
     for _ in range(5):
-        c.bump("k", "2026-09-13")
+        c.try_reserve("k", "2026-09-13", limit=10)
     assert len(calls) == 1, f"清理被调用 {len(calls)} 次，应只 1 次"
 
 
-def test_counter_bump_on_old_day_is_not_purged_away(engine, clock):
-    """给「旧日期」记账后必须读得回来。
+def test_counter_try_reserve_on_old_day_is_not_purged_away(engine, clock):
+    """给「旧日期」占位后必须读得回来。
 
-    清理是 `purge_before(今天-1)`，若在写入**之前**清理，那么对
-    `day='2026-09-01'` 的记账会被当成历史数据删掉 —— 表现为
-    「bump 成功但读回 0」。次序必须是先写后清理。
+    `try_reserve` 的清理是 `purge_before(day-1)`，以**本次写入的同一天**为
+    基准 —— 只删严格更早的日子，绝不会把 day 本身当成历史数据删掉
+    （表现会是「占位成功但读回 0」）。次序由实现保证。
     """
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
-    assert c.bump("k", "2026-09-01") == 1
+    assert c.try_reserve("k", "2026-09-01", limit=10) is True
     assert c.used("k", "2026-09-01") == 1
 
 
@@ -218,20 +217,20 @@ def test_counter_tolerates_read_failure(clock):
             raise RuntimeError("db down")
 
     c = DailyCounter(BrokenStore(), wall_fn=clock.wall_fn)
-    assert c.used("k", "2026-09-13") == 0     # 不抛
-    assert c.bump("k", "2026-09-13") == 0     # 不抛
+    assert c.used("k", "2026-09-13") == 0            # 不抛：读失败按 0 放行
+    assert c.try_reserve("k", "2026-09-13", limit=1) is True  # 不抛：写失败按放行
 
 
 def test_counter_reset_without_clear_store_keeps_data(engine, clock):
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
-    c.bump("k", "2026-09-13")
+    c.try_reserve("k", "2026-09-13", limit=10)
     c.reset()                                  # 默认不清存储
     assert c.used("k", "2026-09-13") == 1
 
 
 def test_counter_reset_with_clear_store_wipes(engine, clock):
     c = DailyCounter(SqliteCountStore(engine), wall_fn=clock.wall_fn)
-    c.bump("k", "2026-09-13")
+    c.try_reserve("k", "2026-09-13", limit=10)
     c.reset(clear_store=True)
     assert c.used("k", "2026-09-13") == 0
 
@@ -398,7 +397,7 @@ def test_sqlite_store_release_decrements_but_not_below_zero(engine):
 
 
 # ---------------------------------------------------------------------------
-# 第 3 层：FileCountStore / InMemoryCountStore
+# 第 3 层：InMemoryCountStore / NullCountStore
 # ---------------------------------------------------------------------------
 def test_null_store_is_stateless(clock):
     """NullCountStore 无状态 —— 日额度永远用不完（等价于停用 L2/L3）。
@@ -517,48 +516,6 @@ def test_memory_store_release():
     s.release(day, "k")
     s.release(day, "k")
     assert s.get(day, "k") == 0
-
-
-def test_file_store_roundtrip(tmp_path: Path):
-    p = tmp_path / "counts.json"
-    s = FileCountStore(p)
-    s.add("2026-09-13", {"a": 1, "b": 2})
-    s.add("2026-09-13", {"a": 3})
-    assert s.load_day("2026-09-13") == {"a": 4, "b": 2}
-    assert s.get("2026-09-13", "a") == 4
-
-
-def test_file_store_persists_across_instances(tmp_path: Path):
-    p = tmp_path / "counts.json"
-    FileCountStore(p).add("2026-09-13", {"a": 5})
-    assert FileCountStore(p).get("2026-09-13", "a") == 5
-
-
-def test_file_store_tolerates_corrupt_file(tmp_path: Path):
-    p = tmp_path / "counts.json"
-    p.write_text("{ this is not json", encoding="utf-8")
-    s = FileCountStore(p)
-    assert s.load_day("2026-09-13") == {}      # 告警而非抛异常
-    s.add("2026-09-13", {"a": 1})
-    assert s.get("2026-09-13", "a") == 1
-
-
-def test_file_store_clear(tmp_path: Path):
-    p = tmp_path / "counts.json"
-    s = FileCountStore(p)
-    s.add("2026-09-13", {"a": 1})
-    s.clear()
-    assert s.load_day("2026-09-13") == {}
-
-
-def test_file_store_purge_before(tmp_path: Path):
-    p = tmp_path / "counts.json"
-    s = FileCountStore(p)
-    s.add("2026-09-01", {"a": 1})
-    s.add("2026-09-13", {"b": 1})
-    s.purge_before("2026-09-13")
-    assert s.load_day("2026-09-01") == {}
-    assert s.load_day("2026-09-13") == {"b": 1}
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,12 @@ except Exception:  # noqa: BLE001  pragma: no cover
     faiss = None  # type: ignore
     _HAS_FAISS = False
 
+# reindex 每批送入 embedding 的通知条数。embed 接口本身支持 list 输入，
+# 批量化把全量重建的网络往返从 O(N) 次降为 O(N/批大小) 次
+# （dashscope 单次往返 50~300ms，逐条 embed_one 是全量重建的主要耗时）。
+# 取 10 是 dashscope /embeddings 的单请求批量上限，其他后端只受其小不限其大。
+_REINDEX_BATCH = 10
+
 
 class VectorStore:
     def __init__(self, embedder: BaseEmbedding | None = None) -> None:
@@ -151,13 +157,26 @@ class VectorStore:
 
         这是维度/后端变更后的唯一恢复路径：把库里混杂的历史向量统一成
         当前后端的维度，使索引与查询向量重新可比。
-        代价是每个通知一次 embedding 调用（本项目量级下可忽略）。
 
-        **降级态拒绝执行**：embedder 粘性降级（如 dashscope 抖动 → local_hash）
-        时，降级是「上游暂时不可用」而非「后端切换」。此时若照常重算，
-        会用 256 维的降级向量**覆盖**库里全部 1024 维历史向量 ——
+        **批量计算**：embedding 按批（`_REINDEX_BATCH` 条/次）送入，DB 行
+        一次性预取后原地更新 —— 逐条 `upsert` 的 N 次网络往返 + N 次 SELECT
+        分别收敛为 N/批大小 次与 1 次。
+
+        **降级态拒绝执行（两道守卫）**：embedder 粘性降级（如 dashscope 抖动
+        → local_hash）时，降级是「上游暂时不可用」而非「后端切换」。此时若
+        照常重算，会用 256 维的降级向量**覆盖**库里全部 1024 维历史向量 ——
         等上游恢复、进程重启后，查询向量与库内向量不可比，检索静默返回 0 条，
-        且没有任何报错。因此降级态下直接拒绝（返回 0），只告警；
+        且没有任何报错。
+
+          · 入口守卫：调用时已降级 → 直接拒绝（返回 0），只告警；
+          · **中途守卫**：降级可能发生在循环执行到一半时（前几批还正常，
+            某批 embed 内部触发粘性降级）。此时不能继续，也不能只撤销剩余
+            部分 —— 已写入的批次与未处理的旧向量会混成两套维度。处理是
+            **整体回滚**（flush 未 commit，rollback 即可撤销全部已写行），
+            再按库内原状重建内存索引，等价于「这次 reindex 没跑过」。
+            回滚的前提是本会话没有 reindex 之外的待提交改动 —— 两个生产调用方
+            （main.py 启动钩子、启动后的自动重建）都满足。
+
         上游恢复后重启服务，load_from_db 即可正常加载历史向量。
         """
         if self._embedder.degraded:
@@ -171,8 +190,48 @@ class VectorStore:
         notices = db.execute(select(Notice).order_by(Notice.id)).scalars().all()
         with self._lock:  # 先清空，让新后端重新决定索引维度
             self._ids, self._matrix, self._index, self._dim = [], None, None, None
-        for notice in notices:
-            self.upsert(db, notice)
+        # 既有行一次预取，写入时原地更新（逐条 SELECT 的 N+1 → 1）
+        existing = {
+            row.notice_id: row
+            for row in db.execute(select(NoticeEmbedding)).scalars().all()
+        }
+
+        for start in range(0, len(notices), _REINDEX_BATCH):
+            batch = notices[start : start + _REINDEX_BATCH]
+            texts = [self.build_text(n) for n in batch]
+            vectors = self._embedder.embed(texts)
+            if self._embedder.degraded:
+                # 本批中途降级：刚返回的就是降级向量，绝不能入库；已写库的
+                # 前 start 条一并回滚，库内与内存索引恢复 reindex 前状态。
+                db.rollback()
+                self.load_from_db(db)
+                logger.warning(
+                    "reindex 中途检测到 embedding 降级（%s，维度 %d），已中止并回滚全部改动："
+                    "库内与内存索引保持 reindex 前状态，避免降级向量覆盖历史向量"
+                    "（已处理 %d/%d 条后中止）。上游恢复后重启服务即可重新 reindex。",
+                    self._embedder.active_name, self._embedder.dim,
+                    start, len(notices),
+                )
+                return 0
+            for notice, text, vec in zip(batch, texts, vectors, strict=True):
+                row = existing.get(notice.id)
+                if row is not None:
+                    row.vector = vec.astype(np.float32).tobytes()
+                    row.text = text
+                    row.dim = int(vec.shape[0])
+                    row.provider = self._embedder.active_name
+                else:
+                    db.add(
+                        NoticeEmbedding(
+                            notice_id=notice.id,
+                            dim=int(vec.shape[0]),
+                            provider=self._embedder.active_name,
+                            text=text,
+                            vector=vec.astype(np.float32).tobytes(),
+                        )
+                    )
+                with self._lock:
+                    self._append(notice.id, vec)
         self._skipped_mismatched = 0
         db.commit()
         logger.info(

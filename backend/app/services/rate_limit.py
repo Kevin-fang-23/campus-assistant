@@ -136,12 +136,19 @@ def client_key(
     trust_proxy 为 False 时只用 TCP 层源地址——X-Forwarded-For 是客户端
     可自由伪造的请求头，直连公网时信任它等于把限流开关交给攻击者。
     置于 ngrok / Nginx 之后时源地址恒为代理地址，才需要开启该开关。
+
+    开启后取 XFF 的**最右**条目，而不是最左。反代的语义是「追加自己看到的
+    对端地址」：客户端伪造的 `X-Forwarded-For: 1.2.3.4` 经代理后变成
+    `1.2.3.4, <真实IP>`，**最左一条始终是攻击者可控的**，取它等于允许
+    轮换伪造 IP 绕过每 IP 日额度；最右一条才是可信代理写入的，不可伪造。
+    多级代理下取最右会把内网多个用户并进同一个桶——那是**收紧**方向
+    （误伤可接受），绝不会像取最左那样放宽护栏。
     """
     if trust_proxy:
         if forwarded_for:
-            first = forwarded_for.split(",")[0].strip()
-            if first:
-                return first
+            last = forwarded_for.split(",")[-1].strip()
+            if last:
+                return last
         if real_ip:
             return real_ip.strip()
     return host or "unknown"

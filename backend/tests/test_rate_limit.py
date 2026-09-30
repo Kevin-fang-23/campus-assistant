@@ -293,12 +293,27 @@ def test_client_key_ignores_forged_header_when_not_trusting_proxy() -> None:
     assert key == "1.1.1.1", "直连时信任 XFF 等于把限流开关交给攻击者"
 
 
-def test_client_key_prefers_first_xff_when_trusting_proxy() -> None:
+def test_client_key_prefers_rightmost_xff_when_trusting_proxy() -> None:
+    """反代语义是「追加自己看到的对端地址」，最右一条才是可信代理写入的。"""
     key = client_key(
         forwarded_for="203.0.113.7, 10.0.0.1", real_ip=None,
         host="127.0.0.1", trust_proxy=True,
     )
-    assert key == "203.0.113.7", "反代链路上取最左侧原始客户端地址"
+    assert key == "10.0.0.1", "应取最右一条（可信代理追加的），而非最左"
+
+
+def test_client_key_ignores_client_forged_leftmost_xff() -> None:
+    """客户端可在请求里自带 XFF 头（反代会把它追加在自己条目的左边）。
+
+    取最左一条等于允许攻击者轮换伪造 IP 绕过每 IP 日额度——这是取最右
+    而不是取最左的核心原因。多级代理下取最右只会把用户并进同一个桶
+    （收紧方向），不会放宽护栏。
+    """
+    key = client_key(
+        forwarded_for="6.6.6.6, 198.51.100.1", real_ip=None,
+        host="10.0.0.1", trust_proxy=True,
+    )
+    assert key == "198.51.100.1", "最左条目是客户端可控的，不得作为限流主体"
 
 
 def test_client_key_falls_back_to_real_ip_then_host() -> None:

@@ -131,6 +131,45 @@ class _StubEmbedder:
         return self.embed([text])[0]
 
 
+class _DegradingMidwayEmbedder:
+    """前 N 次 embed 正常（dim_a），之后模拟粘性降级（dim_b）。
+
+    用于构造「reindex 跑到一半上游故障」的场景：入口守卫（degraded=False）
+    已通过，污染只会发生在循环中途。
+    """
+
+    name = "flaky"
+
+    def __init__(self, dim_a: int, dim_b: int, fail_after_calls: int) -> None:
+        self.dim = dim_a
+        self._dim_a = dim_a
+        self._dim_b = dim_b
+        self._fail_after = fail_after_calls
+        self._texts_seen = 0
+        self.call_count = 0        # embed() 被调用的次数（验证批量：应远小于文本数）
+        self._degraded = False
+
+    @property
+    def active_name(self) -> str:
+        return "flaky_fallback" if self._degraded else self.name
+
+    @property
+    def degraded(self) -> bool:
+        return self._degraded
+
+    def embed(self, texts):
+        self._texts_seen += len(texts)
+        self.call_count += 1
+        if self._texts_seen > self._fail_after:
+            self._degraded = True
+            self.dim = self._dim_b
+        d = self._dim_b if self._degraded else self._dim_a
+        return np.tile(np.arange(d, dtype=np.float32), (len(texts), 1))
+
+    def embed_one(self, text):
+        return self.embed([text])[0]
+
+
 @pytest.fixture
 def isolated_db():
     """独立的内存库：这些用例要写 documents/notices/embeddings，
@@ -266,6 +305,57 @@ def test_reindex_refuses_when_degraded(isolated_db, caplog) -> None:
     assert row.dim == 16, "历史向量被降级向量覆盖了"
     assert row.provider == "stub"
     assert any("拒绝 reindex" in r.message for r in caplog.records), (
+        f"应留下可诊断的告警，实际日志: {[r.message for r in caplog.records]}"
+    )
+
+
+def test_reindex_aborts_and_rolls_back_when_degraded_midway(isolated_db, caplog) -> None:
+    """降级发生在 reindex 循环**中途**时必须中止并回滚，不得污染历史向量。
+
+    背景：入口的降级守卫只在调用时检查一次。若上游在第 k 条通知后故障
+    （粘性降级 → 维度翻转），继续执行会用降级向量覆盖余下通知的历史向量，
+    库里混成两套维度——恰是「降级向量污染数据库」的另一种发生时机。
+    正确行为：整体回滚（已 flush 未 commit），按库内原状重建内存索引，
+    等价于这次 reindex 没跑过。
+    """
+    import logging
+
+    notices = [
+        _make_notice(isolated_db, f"midway_{i}.txt", f"中途降级探针 {i}") for i in range(3)
+    ]
+    for n in notices:
+        _put_embedding(isolated_db, n.id, dim=4, provider="stub")
+
+    # 当前正先后端 16 维（入口守卫通过），第 2 次 embed 起降级为 8 维；
+    # 历史 4 维向量与 16 维不符 → 触发启动自动 reindex 的真实场景
+    emb = _DegradingMidwayEmbedder(dim_a=16, dim_b=8, fail_after_calls=1)
+    store = VectorStore(embedder=emb)  # type: ignore[arg-type]
+    store.load_from_db(isolated_db)
+    assert store.skipped_mismatched == 3, "前置条件：历史向量应因维度不符被跳过"
+
+    with caplog.at_level(logging.WARNING, logger="app.services.vector_store"):
+        n = store.reindex(isolated_db)
+
+    assert n == 0, "中途降级应中止 reindex 并返回 0"
+    assert emb.degraded is True, "前置条件：降级确实发生在循环中"
+    # 3 条通知应被打成**一批**送入 embedding（批量接口），而不是逐条 3 次调用
+    assert emb.call_count == 1, (
+        f"reindex 应批量调用 embed（3 条 → 1 次），实际调了 {emb.call_count} 次"
+    )
+
+    # 库内全部行保持历史向量（回滚生效），没有任何一行被降级向量覆盖
+    from app.models import NoticeEmbedding
+
+    rows = isolated_db.query(NoticeEmbedding).all()
+    assert len(rows) == 3
+    assert all(r.dim == 4 for r in rows), "历史向量被降级向量覆盖了"
+    assert all(r.provider == "stub" for r in rows), "provider 被降级后端改写了"
+
+    # 内存索引恢复到 reindex 前的诚实状态：当前（降级）embedder 与历史向量
+    # 不可比 → 全部跳过并计数，与「降级态下重启服务」的表现一致
+    assert store.size == 0
+    assert store.skipped_mismatched == 3
+    assert any("中止并回滚" in r.message for r in caplog.records), (
         f"应留下可诊断的告警，实际日志: {[r.message for r in caplog.records]}"
     )
 

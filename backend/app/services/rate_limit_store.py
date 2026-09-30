@@ -94,7 +94,6 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Protocol
 
 from sqlalchemy import text
@@ -417,110 +416,6 @@ class SqliteCountStore:
             conn.execute(text("DELETE FROM rate_limit_counters"))
 
 
-class FileCountStore:
-    """基于单个 JSON 文件的计数存储（无数据库依赖时的兜底）。
-
-    为什么不只用 SQLite：`NullCountStore` 之外还需要一个「不引入 SQLAlchemy」
-    的选项 —— 例如有人想单独复用 `ratese` 这段逻辑。JSON 文件用
-    「读-改-写 + 进程内锁」实现；**跨进程并发不安全**，仅在明确单 worker
-    但需要跨重启保留时使用，已在文档里标注。
-
-    实现取向：文件小（一行一个计数），整体读入内存累加后覆写。
-    """
-
-    def __init__(self, path: Path) -> None:
-        self._path = Path(path)
-        self._lock = threading.Lock()
-
-    def _read(self) -> dict[str, dict[str, int]]:
-        if not self._path.exists():
-            return {}
-        try:
-            import json
-
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception as exc:  # noqa: BLE001
-            # 文件损坏不应让限流整体崩掉：告警后退回空计数（等同重置一次）
-            logger.warning("限流计数文件损坏，按空计数处理：%s", exc)
-            return {}
-
-    def load_day(self, day: str) -> dict[str, int]:
-        with self._lock:
-            return dict(self._read().get(day, {}))
-
-    def get(self, day: str, key: str) -> int:
-        with self._lock:
-            return int(self._read().get(day, {}).get(key, 0))
-
-    def add(self, day: str, deltas: dict[str, int]) -> None:
-        if not deltas:
-            return
-        import json
-
-        with self._lock:
-            data = self._read()
-            bucket = data.setdefault(day, {})
-            for k, v in deltas.items():
-                if v > 0:
-                    bucket[k] = int(bucket.get(k, 0)) + int(v)
-            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self._path)   # 原子替换，避免读到半个文件
-
-    def reserve(self, day: str, key: str, limit: int) -> int:
-        """锁内完成「读-判-写」。
-
-        ⚠️ 进程内锁只对本进程有效 —— 多进程下本实现**仍会超发**。
-        这正是本类标注「仅限明确单 worker」的原因之一：
-        需要多 worker 请用 `SqliteCountStore`。
-        """
-        import json
-
-        with self._lock:
-            data = self._read()
-            bucket = data.setdefault(day, {})
-            new = int(bucket.get(key, 0)) + 1
-            if new > limit:
-                return new          # 不落盘：撤销占位
-            bucket[key] = new
-            tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self._path)
-            return new
-
-    def release(self, day: str, key: str) -> None:
-        import json
-
-        with self._lock:
-            data = self._read()
-            bucket = data.get(day)
-            if not bucket or key not in bucket:
-                return
-            bucket[key] = max(0, int(bucket[key]) - 1)
-            self._path.write_text(
-                json.dumps(data, ensure_ascii=False), encoding="utf-8"
-            )
-
-    def purge_before(self, day: str) -> None:
-        import json
-
-        with self._lock:
-            data = self._read()
-            kept = {d: v for d, v in data.items() if d >= day}
-            if len(kept) != len(data):
-                self._path.write_text(
-                    json.dumps(kept, ensure_ascii=False), encoding="utf-8"
-                )
-
-    def clear(self) -> None:
-        with self._lock:
-            if self._path.exists():
-                self._path.unlink()
-
-
 class DailyCounter:
     """每日计数器：**直查存储**，不自带缓存。
 
@@ -533,7 +428,7 @@ class DailyCounter:
     实际放行了 **60** 次 —— 每个 worker 都凭自己那份滞后的内存值判断
     「还没到 40」，于是集体超发。额度越大超发越多，等于没修好 #8。
 
-    现在每次 `used()` 都读存储、每次 `bump()` 都写存储，多 worker 共享
+    现在每次 `used()` / `try_reserve()` 都直查存储，多 worker 共享
     同一份真相。性能上完全可行（WAL 下 88.8µs/请求，见模块 docstring 实测表）。
 
     代价：`used()` 不再免费，调用方不要把它放进循环里反复调
@@ -561,9 +456,9 @@ class DailyCounter:
     def used(self, key: str, day: str) -> int:
         """读某键当日已用量。直查存储，保证多 worker 一致。
 
-        同时借这次调用触发历史清理检查（每天仅一次）：判定路径每请求都会
-        经过 `used`，而纯只读场景不会走 `bump`；只挂在 `bump` 上的话，
-        一个只被拒绝请求的服务（读多写少）永远不清理旧数据。
+        同时借这次调用触发历史清理检查（每天仅一次）：读（used）与写
+        （try_reserve）两条路径都会经过这里等价的清理检查，不会因为
+        「只挂在写上」而让读多写少的服务（只被拒绝请求）永远不清理旧数据。
         """
         self._maybe_purge(day)
         try:
@@ -573,21 +468,6 @@ class DailyCounter:
             # 这是有意识的取舍（可用性优先于护栏完整性），故打 warning 留痕。
             logger.warning("限流计数读取失败，本次按 0 处理：%s", exc)
             return 0
-
-    def bump(self, key: str, day: str) -> int:
-        """累加 1，返回累加后的值。写失败只告警。
-
-        次序：**先写入、后清理**（清理由 `used` 触发）。若反过来先清理，
-        一次 `purge_before` 可能把本次要写入的那天当成历史数据删掉
-        （例如测试/回放场景直接 `bump("k", "2026-09-01")`，而当天是 09-13）
-        —— 表现为「记账成功了但读回来是 0」，很难排查。
-        """
-        try:
-            self._store.add(day, {key: 1})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("限流计数写入失败（本次增量丢弃）：%s", exc)
-            return 0
-        return self.used(key, day)
 
     def try_reserve(self, key: str, day: str, limit: int) -> bool:
         """**原子占位**：在额度内则占 1 个并返回 True；已满则返回 False。

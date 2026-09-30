@@ -262,6 +262,10 @@ def test_no_recall_response_is_also_cached(
     calls = _install(monkeypatch, ok)
     # 用一个极冷门的 query 触发极低分召回（citations 仍非空，但接近降级）
     no_match = "zzz_极冷门查询_xyz"
+    # 关闭问答相关性过滤：本用例验证的是「非空引用的低分召回也会被缓存」；
+    # 过滤开启时该 query 会被判无关、citations 直接为空、连 LLM 都不调，
+    # 那条路径由 test_api.py::test_qa_relevance_filter_skips_llm_for_offtopic_query 钉住。
+    monkeypatch.setattr(qa_module.settings, "qa_relevance_filter", False)
 
     r1 = client.post("/api/qa", json={"query": no_match, "top_k": 1}).json()
     r2 = client.post("/api/qa", json={"query": no_match, "top_k": 1}).json()

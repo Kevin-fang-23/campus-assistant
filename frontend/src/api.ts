@@ -76,11 +76,12 @@ export function updateNotice(
   id: number,
   patch: Partial<{
     category: string;
+    // title 是 NOT NULL 列：前端清空标题时不提交该键（undefined），不能传 null
     title: string;
-    summary: string;
-    issuer: string;
-    location: string;
-    course: string;
+    summary: string | null;
+    issuer: string | null;
+    location: string | null;
+    course: string | null;
     event_time: string | null;
     deadline: string | null;
     contacts: string[];

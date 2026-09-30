@@ -69,7 +69,7 @@ VLM 接百炼 `qwen3-vl-plus`、向量接 `text-embedding-v4`。
 - **中文时间语义**：相对日期（"3天后"）、星期（"周五"）、改期 vs 原定（"调整至周五…原定周三…"）精准区分；截止默认补到 23:59。
 - **待办生成**：按规则自动拆出"开始动手 / 提交"等任务，带优先级与提醒时间。
 - **任务追踪**：看板（待办 / 进行中 / 已完成 / 已归档）状态流转，逾期自动标红，状态变更写入审计时间线。
-- **去重**：内容向量相似度 ≥ 0.90 判定为重复通知，自动跳过入库。
+- **去重**：内容向量相似度 ≥ 0.90 判定为重复通知——通知仍入库（记录 `duplicate_of_id` 备查），但**跳过待办生成**。
 - **人工复核**：低置信度结果进"待复核"，可在前端修正，保存后自动重算待办。
 
 ### 检索与问答
@@ -398,6 +398,7 @@ LLM 与 Embedding 共用进程级客户端（`providers/llm_client.py`），prov
 |---|---|---|
 | `SEARCH_MIN_BIGRAM_OVERLAP` | `1` | 共享二字词个数下限；`0` = 关闭判定，退回旧行为 |
 | `SEARCH_KEEP_IF_FILTERED` | `false` | `true` = 只标记不丢弃（灰度观察，便于看阈值会拦掉什么） |
+| `QA_RELEVANCE_FILTER` | `true` | `/api/qa` 是否复用同一阈值：开启后无关问题不再把 top-k 通知塞给 LLM（省一次生成调用），候选全被过滤时直接返回「知识库中暂时没有相关通知」；`false` = 回滚为不过滤的旧行为 |
 
 **为什么不用分数做阈值**：三种候选判据（BM25 绝对分 / 余弦 / 句级选片分）实测**区间全部重叠**，
 无法分离「无关」与「相关」—— 根因是中文里单字重合必然发生（"今天天气"撞"明天"里的"天"）。
@@ -428,7 +429,7 @@ LLM 与 Embedding 共用进程级客户端（`providers/llm_client.py`），prov
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `RATE_LIMIT_ENABLED` | `true` | 总开关 |
-| `RATE_LIMIT_TRUST_PROXY` | `false` | **置 ngrok / Nginx 之后必须设为 `true`**，否则所有访客被视为同一来源；直连公网时必须保持 `false`，否则可伪造 `X-Forwarded-For` 绕过 |
+| `RATE_LIMIT_TRUST_PROXY` | `false` | **置 ngrok / Nginx 之后必须设为 `true`**，否则所有访客被视为同一来源；直连公网时必须保持 `false`，否则可伪造 `X-Forwarded-For` 绕过。开启后取 XFF **最右**一条（可信代理追加的对端地址）——客户端自带的伪造条目在最左、会被忽略 |
 | `RATE_LIMIT_QA_PER_MIN` / `_PER_IP_DAY` / `_PER_DAY` | `6` / `60` / `300` | `/api/qa`（= 1 次 LLM + 1 次 embedding） |
 | `RATE_LIMIT_INGEST_PER_MIN` / `_PER_IP_DAY` / `_PER_DAY` | `10` / `40` / `200` | `/api/documents/*`（= VLM + OCR 解析） |
 | `RATE_LIMIT_DEFAULT_PER_MIN` | `120` | 其余只读接口 |
@@ -531,7 +532,7 @@ SQLite 写事务互斥，因此不可能有两个进程同时读到 39 再各自
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/search` | 混合检索；返回 `snippet`（句级片段）、`match`（命中来源 both/vector/bm25）、两路分数，以及 `filtered`（结果是否因相关性阈值被清空） |
-| POST | `/api/qa` | RAG 问答；返回答案（含 `[n]` 引用标记）、`citations`、`degraded` |
+| POST | `/api/qa` | RAG 问答；返回答案（含 `[n]` 引用标记）、`citations`、`degraded`。召回候选与 `/api/search` 共用同一相关性阈值过滤（`QA_RELEVANCE_FILTER` 可关闭） |
 
 ### 元信息
 
