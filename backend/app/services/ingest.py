@@ -195,6 +195,12 @@ def regenerate_tasks(db: Session, notice: Notice, base_time: datetime | None = N
     """人工修正通知后重算待办：保留已完成任务，重建未完成的自动任务。"""
     from ..graph.nodes import todo_gen_node
 
+    # 保留任务（done/archived）的标题先收集：重算时同名草稿若再建一遍，
+    # 就会出现「一场已完成的活动两条待办」的重复任务。
+    kept_titles = {
+        t.title for t in notice.tasks
+        if t.source == "auto" and t.status not in (TaskStatus.TODO, TaskStatus.DOING)
+    }
     for task in list(notice.tasks):
         if task.source == "auto" and task.status in (TaskStatus.TODO, TaskStatus.DOING):
             db.delete(task)
@@ -212,6 +218,7 @@ def regenerate_tasks(db: Session, notice: Notice, base_time: datetime | None = N
         "trace": [],
     }
     drafts = todo_gen_node(state).get("task_drafts") or []  # type: ignore[arg-type]
+    drafts = [d for d in drafts if d.get("title") not in kept_titles]
     tasks = create_tasks(db, notice, drafts)
     index_notice(db, notice)
     db.commit()

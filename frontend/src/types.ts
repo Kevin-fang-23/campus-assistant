@@ -183,6 +183,7 @@ export interface StatsOut {
   tasks_overdue: number;
   needs_review: number;
   by_category: Record<string, number>;
+  tasks_by_category: Record<string, number>;
 }
 
 export interface Health {

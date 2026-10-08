@@ -194,9 +194,18 @@ def test_manual_task_and_stats(client: TestClient) -> None:
         json={"title": "去图书馆还书", "category": "other", "priority": 2},
     )
     assert created.status_code == 201
+    # 造一条已归档任务：若 stats 把 archived 计入总数，下面的不变式就会红
+    tid = created.json()["id"]
+    assert client.patch(f"/api/tasks/{tid}", json={"status": "archived"}).status_code == 200
     stats = client.get("/api/tasks/stats").json()
     assert stats["tasks_total"] >= 1
     assert stats["notices"] >= 1
+    # 口径不变式：总数 = 三个活跃状态之和（archived 不计入），概览页卡片可互相核对
+    assert stats["tasks_total"] == (
+        stats["tasks_todo"] + stats["tasks_doing"] + stats["tasks_done"]
+    )
+    # 任务类别分布与总数同口径：各条相加必须等于 tasks_total
+    assert sum(stats["tasks_by_category"].values()) == stats["tasks_total"]
 
 
 def test_notice_review_and_regenerate(client: TestClient) -> None:
@@ -212,6 +221,33 @@ def test_notice_review_and_regenerate(client: TestClient) -> None:
     assert body["needs_review"] is False and body["reviewed"] is True
     assert body["title"] == "操作系统大作业（人工修正）"
     assert any(t["due_at"].startswith("2026-09-20") for t in body["tasks"])
+
+
+def test_regenerate_skips_titles_of_done_tasks(client: TestClient) -> None:
+    """回归护栏：重算待办不得重建已完成任务同名条目。
+
+    背景：通知的自动任务全部完成后触发重算，旧实现保留完成任务的同时
+    又按草稿新建一条同名待办——一场已参加完的活动出现两条待办。
+    """
+    content = (
+        "《星际穿越》重映观影活动通知\n时间：本周五 19:00\n地点：大礼堂\n"
+        "凭报名二维码入场，请提前十分钟到达。\n"
+    )
+    resp = client.post(
+        "/api/documents/text", json={"content": content, "filename": "movie_regen.txt"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    notice_id = data["notice"]["id"]
+    assert data["tasks"], "该通知应自动生成待办"
+
+    for t in data["tasks"]:
+        assert client.patch(f"/api/tasks/{t['id']}", json={"status": "done"}).status_code == 200
+
+    assert client.post(f"/api/notices/{notice_id}/regenerate-tasks").status_code == 200
+
+    titles = [t["title"] for t in client.get(f"/api/notices/{notice_id}").json()["tasks"]]
+    assert len(titles) == len(set(titles)), "重算待办产生了与已完成任务同名的重复待办"
 
 
 def test_semantic_search(client: TestClient) -> None:

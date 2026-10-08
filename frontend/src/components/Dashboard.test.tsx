@@ -20,6 +20,7 @@ function makeStats(over: Partial<StatsOut> = {}): StatsOut {
     tasks_overdue: 1,
     needs_review: 2,
     by_category: { 课程通知: 3, 作业要求: 2 },
+    tasks_by_category: { 活动海报: 3, 其他: 2 },
     ...over,
   };
 }
@@ -36,8 +37,12 @@ describe("Dashboard 概览", () => {
     expect(screen.getByText("加载中…")).toBeInTheDocument();
     expect(await screen.findByText("概览")).toBeInTheDocument();
     // 关键数字可见
-    expect(screen.getByText("5")).toBeInTheDocument(); // 通知
+    expect(screen.getByText("待办总数")).toBeInTheDocument(); // = 待处理+进行中+已完成
+    expect(screen.getByText("4")).toBeInTheDocument(); // tasks_total 数值卡片
     expect(screen.getByText("待复核")).toBeInTheDocument();
+    // 文档/通知卡片已下线，接口仍返回的字段不应出现在页面上
+    expect(screen.queryByText("文档")).not.toBeInTheDocument();
+    expect(screen.queryByText("通知")).not.toBeInTheDocument();
   });
 
   it("接口报错时展示错误卡片而不是空白", async () => {
@@ -47,17 +52,22 @@ describe("Dashboard 概览", () => {
     expect(await screen.findByText(/加载统计失败/)).toBeInTheDocument();
   });
 
-  it("类别分布按条目渲染条形图；无数据时引导去导入", async () => {
+  it("任务类别分布按条目渲染条形图；无数据时引导去导入", async () => {
     mockedStats.mockResolvedValue(makeStats());
     render(<Dashboard onNavigate={() => {}} />);
 
-    expect(await screen.findByText("课程通知")).toBeInTheDocument();
-    expect(screen.getByText("作业要求")).toBeInTheDocument();
+    await screen.findByText("任务类别分布（不含已归档）");
+    expect(screen.getByText("活动海报")).toBeInTheDocument();
+    expect(screen.getByText("其他")).toBeInTheDocument();
+
+    // 通知类别分布已下线
+    expect(screen.queryByText("通知类别分布")).not.toBeInTheDocument();
+    expect(screen.queryByText("课程通知")).not.toBeInTheDocument();
 
     // 空分布的另一分支
-    mockedStats.mockResolvedValue(makeStats({ by_category: {} }));
+    mockedStats.mockResolvedValue(makeStats({ tasks_by_category: {} }));
     render(<Dashboard onNavigate={() => {}} />);
-    expect(await screen.findAllByText(/暂无数据/)).not.toHaveLength(0);
+    expect(await screen.findByText(/暂无待办/)).toBeInTheDocument();
   });
 
   it("可点击卡片触发页面跳转（待办/逾期 → tasks，待复核 → notices）", async () => {

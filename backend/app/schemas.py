@@ -285,3 +285,6 @@ class StatsOut(BaseModel):
     tasks_overdue: int
     needs_review: int
     by_category: dict[str, int]
+    # 通知与任务的类别口径不同：一条通知可生成多条任务、手动待办不挂通知。
+    # 看板上数出来的「其他 4 条」必须在这张分布里可见，故单独给出。
+    tasks_by_category: dict[str, int] = {}

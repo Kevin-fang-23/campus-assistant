@@ -69,6 +69,14 @@ def stats(db: Session = Depends(get_db)) -> StatsOut:
     by_category = dict(
         db.execute(select(Notice.category, func.count()).group_by(Notice.category)).all()
     )
+    # 与 tasks_total 同口径（剔除 archived），保证分布条加起来等于待办总数
+    tasks_by_category = dict(
+        db.execute(
+            select(Task.category, func.count())
+            .where(Task.status != TaskStatus.ARCHIVED)
+            .group_by(Task.category)
+        ).all()
+    )
     overdue = db.execute(
         select(func.count()).select_from(Task).where(
             Task.due_at.is_not(None), Task.due_at < now,
@@ -78,7 +86,9 @@ def stats(db: Session = Depends(get_db)) -> StatsOut:
     return StatsOut(
         documents=db.execute(select(func.count()).select_from(Document)).scalar_one(),
         notices=db.execute(select(func.count()).select_from(Notice)).scalar_one(),
-        tasks_total=sum(counts.values()),
+        # 总数剔除 archived：保证 tasks_total == todo+doing+done，
+        # 概览页四张卡片口径自洽，可互相核对。
+        tasks_total=sum(v for k, v in counts.items() if k != TaskStatus.ARCHIVED),
         tasks_todo=counts.get(TaskStatus.TODO, 0),
         tasks_doing=counts.get(TaskStatus.DOING, 0),
         tasks_done=counts.get(TaskStatus.DONE, 0),
@@ -87,6 +97,7 @@ def stats(db: Session = Depends(get_db)) -> StatsOut:
             select(func.count()).select_from(Notice).where(Notice.needs_review.is_(True))
         ).scalar_one(),
         by_category={Category.LABELS.get(k, k): v for k, v in by_category.items()},
+        tasks_by_category={Category.LABELS.get(k, k): v for k, v in tasks_by_category.items()},
     )
 
 
