@@ -15,33 +15,72 @@ import type {
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
 const HEALTH = import.meta.env.VITE_API_BASE ? `${import.meta.env.VITE_API_BASE}/health` : "/health";
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`;
-    try {
-      const body = await res.json();
-      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-    } catch {
-      /* ignore */
+// ---- 超时上限 ----
+// 取值原则：宽到不会误杀正常的慢请求（OCR / VLM / LLM 本就慢），又短到不会在
+// CPU 被抢占（如屏幕共享时本机代理/后端被饿住）时让请求无限挂着、界面永远转圈。
+export const DEFAULT_TIMEOUT_MS = 60_000; // 列表 / 检索 / 统计等轻量请求
+export const INGEST_TIMEOUT_MS = 180_000; // 上传解析：OCR + VLM + LLM 抽取，链路最长
+export const QA_TIMEOUT_MS = 90_000; // 检索增强问答：比检索多一次 LLM 生成
+
+function timeoutMessage(ms: number): string {
+  return `请求超时（${Math.round(ms / 1000)}s）：后端或代理繁忙，请重试`;
+}
+
+/**
+ * 用 AbortController 给一段异步请求加超时。
+ *
+ * 为什么必须有：原生 fetch 不带超时，一旦请求被卡住（开发模式下 /api 要经 Vite
+ * 代理转发，CPU 被抢占时代理会变慢甚至挂起），Promise 永远不 resolve，界面就永远
+ * 停在「处理中…」。这里到点主动 abort，并把 AbortError 翻译成可读的中文超时提示，
+ * 让上层能落到「超时，请重试」而不是无限等待。
+ */
+async function withTimeout<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await run(controller.signal);
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") {
+      throw new Error(timeoutMessage(timeoutMs));
     }
-    throw new Error(detail);
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+}
+
+async function req<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+  return withTimeout(timeoutMs, async (signal) => {
+    const res = await fetch(path, {
+      ...init,
+      // signal 放在 ...init 之后：超时由本层统一管理，覆盖调用方可能传入的 signal
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    if (res.status === 204) return undefined as T;
+    return (await res.json()) as T;
+  });
 }
 
 // ---------- documents ----------
 export function ingestFile(file: File): Promise<IngestResult> {
   const form = new FormData();
   form.append("file", file);
-  return fetch(`${BASE}/documents/upload`, { method: "POST", body: form }).then(async (res) => {
+  return withTimeout(INGEST_TIMEOUT_MS, async (signal) => {
+    const res = await fetch(`${BASE}/documents/upload`, { method: "POST", body: form, signal });
     if (!res.ok) {
       let detail = `${res.status}`;
       try {
@@ -57,10 +96,14 @@ export function ingestFile(file: File): Promise<IngestResult> {
 }
 
 export function ingestText(payload: TextIngestIn): Promise<IngestResult> {
-  return req<IngestResult>(`${BASE}/documents/text`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return req<IngestResult>(
+    `${BASE}/documents/text`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    INGEST_TIMEOUT_MS
+  );
 }
 
 // ---------- notices ----------
@@ -152,10 +195,14 @@ export function search(query: string, top_k = 5): Promise<SearchOut> {
  * 只需按 degraded 展示不同提示即可。
  */
 export function askQA(query: string, top_k = 5): Promise<QAOut> {
-  return req<QAOut>(`${BASE}/qa`, {
-    method: "POST",
-    body: JSON.stringify({ query, top_k }),
-  });
+  return req<QAOut>(
+    `${BASE}/qa`,
+    {
+      method: "POST",
+      body: JSON.stringify({ query, top_k }),
+    },
+    QA_TIMEOUT_MS
+  );
 }
 
 // ---------- meta ----------

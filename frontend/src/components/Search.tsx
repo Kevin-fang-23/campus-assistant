@@ -141,7 +141,16 @@ export default function Search() {
         ))}
       </div>
 
-      {err && <div className="card error">{err}</div>}
+      {err && (
+        <div className="card error">
+          {err}
+          {/* 高负载（如屏幕共享抢占 CPU）下请求可能超时/失败，给一键重试，
+              避免用户手动重新输入查询。q 与 mode 都还在 state 里，直接复用。 */}
+          <button className="btn" style={{ marginLeft: 12 }} disabled={busy} onClick={() => run(q)}>
+            重试
+          </button>
+        </div>
+      )}
 
       {/* ---------- 问答结果 ---------- */}
       {qa && (

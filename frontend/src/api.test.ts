@@ -95,4 +95,47 @@ describe("api 请求层", () => {
     expect(path).toContain("status=todo");
     expect(init.method).toBeUndefined();
   });
+
+  it("每个请求都带上 AbortSignal，以便超时时能主动中止", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ query: "q", backend: "faiss", hits: [] }));
+
+    await search("调课");
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("请求被中止时抛出可读的中文超时提示，而不是原始的 AbortError", async () => {
+    // 模拟 fetch 因 abort 而拒绝：DOMException/Error 的 name 为 "AbortError"
+    const abortErr = new Error("The operation was aborted");
+    abortErr.name = "AbortError";
+    fetchMock.mockRejectedValueOnce(abortErr);
+
+    await expect(search("x")).rejects.toThrow(/请求超时（60s）/);
+  });
+
+  it("迟迟不响应会到点主动 abort（假定时器验证超时真的会触发）", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          // 只有当 withTimeout 调用 controller.abort() 时，signal 才会触发 abort 事件
+          init.signal!.addEventListener("abort", () => {
+            const e = new Error("The operation was aborted");
+            e.name = "AbortError";
+            reject(e);
+          });
+        });
+      });
+
+      const pending = search("x"); // 默认 60s 超时
+      // 先挂上拒绝断言（等于立刻给 pending  attach 处理器），再推进定时器；
+      // 否则 abort 触发的拒绝会在断言挂上之前被判定为 unhandled rejection。
+      const assertion = expect(pending).rejects.toThrow(/请求超时/);
+      await vi.advanceTimersByTimeAsync(200_000); // 远超任何操作的超时上限
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

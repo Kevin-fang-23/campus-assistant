@@ -8,12 +8,18 @@ import {
   formatDateTime,
 } from "../common";
 
+/** 记住上一次提交的内容，供错误态「重试」复用。
+ *  文本只存 kind，重试时读最新的 text/filename state（用户可能已改）；
+ *  文件则存 File 本体（无法从 state 重新拿到）。 */
+type Pending = { kind: "text" } | { kind: "file"; file: File };
+
 export default function Upload() {
   const [tab, setTab] = useState<"file" | "text">("file");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<IngestResult | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [pending, setPending] = useState<Pending | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [text, setText] = useState("");
@@ -23,6 +29,7 @@ export default function Upload() {
     setErr(null);
     setBusy(true);
     setResult(null);
+    setPending({ kind: "file", file });
     try {
       const r = await ingestFile(file);
       setResult(r);
@@ -36,11 +43,14 @@ export default function Upload() {
   async function handleText() {
     if (!text.trim()) {
       setErr("请输入文本内容");
+      // 纯校验错误，不是提交失败：清掉 pending，避免错误卡片上出现无意义的「重试」
+      setPending(null);
       return;
     }
     setErr(null);
     setBusy(true);
     setResult(null);
+    setPending({ kind: "text" });
     try {
       const r = await ingestText({ content: text, filename: filename || undefined });
       setResult(r);
@@ -49,6 +59,12 @@ export default function Upload() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function retry() {
+    if (!pending) return;
+    if (pending.kind === "file") handleFile(pending.file);
+    else handleText();
   }
 
   return (
@@ -123,7 +139,17 @@ export default function Upload() {
       )}
 
       {busy && <div className="card muted">正在解析与抽取，请稍候…</div>}
-      {err && <div className="card error">❌ {err}</div>}
+      {err && (
+        <div className="card error">
+          ❌ {err}
+          {/* 提交失败（超时/后端错误）才给重试；纯校验错误 pending 为 null，不显示 */}
+          {pending && (
+            <button className="btn" style={{ marginLeft: 12 }} disabled={busy} onClick={retry}>
+              重试
+            </button>
+          )}
+        </div>
+      )}
       {result && <ResultView r={result} />}
     </div>
   );

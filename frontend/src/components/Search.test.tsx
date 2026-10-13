@@ -117,6 +117,24 @@ describe("Search 组件", () => {
     expect(err.className).toContain("error");
   });
 
+  it("报错后点「重试」会用同一查询重新发起请求（无需重新输入）", async () => {
+    // 屏幕共享等 CPU 抢占场景下，请求可能超时/失败；重试让用户一键恢复。
+    mockedSearch
+      .mockRejectedValueOnce(new Error("请求超时（60s）：后端或代理繁忙，请重试"))
+      .mockResolvedValueOnce(makeSearchOut([makeHit({ title: "重试后成功召回的通知", snippet: "片段" })]));
+    const user = userEvent.setup();
+    render(<Search />);
+    await runSearch(user);
+
+    expect(await screen.findByText(/请求超时/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText("重试后成功召回的通知")).toBeInTheDocument();
+    expect(mockedSearch).toHaveBeenCalledTimes(2);
+    // 两次都用的是同一条查询
+    expect(mockedSearch.mock.calls[0][0]).toBe(mockedSearch.mock.calls[1][0]);
+  });
+
   it("切换模式会清掉上一次结果（避免把检索结果当问答结果展示）", async () => {
     mockedSearch.mockResolvedValueOnce(makeSearchOut([makeHit({ snippet: "片段内容" })]));
     const user = userEvent.setup();

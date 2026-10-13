@@ -157,6 +157,37 @@ describe("Upload 导入", () => {
     expect(await screen.findByText(/文件超过 20MB 限制/)).toBeInTheDocument();
   });
 
+  it("文本解析报错后点「重试」会用最新文本重新提交", async () => {
+    // 超时/后端繁忙时让用户一键重试；文本类重试读的是当前输入框内容（用户可能已修改）。
+    mockedIngestText
+      .mockRejectedValueOnce(new Error("请求超时（180s）：后端或代理繁忙，请重试"))
+      .mockResolvedValueOnce(makeResult());
+    const user = userEvent.setup();
+    render(<Upload />);
+
+    await user.click(screen.getByRole("button", { name: "粘贴文本" }));
+    const box = screen.getByPlaceholderText(/把通知原文粘贴到这里/);
+    await user.type(box, "《数据结构》调课通知");
+    await user.click(screen.getByRole("button", { name: "提交并解析" }));
+
+    expect(await screen.findByText(/请求超时/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText(/文档：调课通知.txt/)).toBeInTheDocument();
+    expect(mockedIngestText).toHaveBeenCalledTimes(2);
+  });
+
+  it("纯校验错误（文本为空）不显示「重试」按钮——重试也无意义", async () => {
+    const user = userEvent.setup();
+    render(<Upload />);
+
+    await user.click(screen.getByRole("button", { name: "粘贴文本" }));
+    await user.click(screen.getByRole("button", { name: "提交并解析" }));
+
+    expect(await screen.findByText(/请输入文本内容/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+  });
+
   it("文件上传：选择文件后调用 ingestFile 并展示结果", async () => {
     mockedIngestFile.mockResolvedValue(makeResult());
     render(<Upload />);
