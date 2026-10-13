@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from typing import Any
@@ -20,6 +21,58 @@ def _to_ndarray(image_bytes: bytes):
     if img.mode != "RGB":
         img = img.convert("RGB")
     return np.array(img)
+
+
+def effective_ocr_threads() -> int:
+    """把 settings.ocr_cpu_threads 解析成实际 intra-op 线程数。
+
+    返回值语义：**0 = 不干预（用引擎默认）**，>0 = 限制到该线程数。
+      · 配置 <0  → 0（显式不限制，吃满全核）
+      · 配置 >0  → 原值
+      · 配置 =0  → 自动 max(2, cpu_count // 2)，给系统留一半核
+    """
+    cfg = int(settings.ocr_cpu_threads)
+    if cfg < 0:
+        return 0
+    if cfg > 0:
+        return cfg
+    cores = os.cpu_count() or 4
+    return max(2, cores // 2)
+
+
+def limit_rapidocr_threads(n: int) -> None:
+    """把 onnxruntime 的 intra-op 线程上限注入 rapidocr（幂等，n<=0 时不干预）。
+
+    为什么需要：rapidocr_onnxruntime 的 OrtInferSession 构造 SessionOptions()
+    后**从不设置 intra_op_num_threads**，onnxruntime 便按物理核数起线程，且
+    det/cls/rec 三个会话各自都想吃满全核。屏幕共享/录制时采集+编码本就抢 CPU，
+    OCR 一起来会把所有核占满，饿死代理转发与浏览器渲染（表现为解析极慢甚至
+    加载不出来）。该库无公开参数可传线程数，故在其模块命名空间里把
+    SessionOptions 换成一个会预设 intra_op_num_threads 的工厂——只影响本进程内
+    rapidocr 之后创建的会话，可通过配置 <0 关闭（回到引擎默认）。
+    """
+    if n <= 0:
+        return
+    import rapidocr_onnxruntime.utils as rocr_utils
+
+    # 幂等：已打过补丁就不再重复包裹（避免 _orig 指向上一轮的工厂）。
+    if getattr(rocr_utils.SessionOptions, "_campus_thread_capped", False):
+        return
+    original = rocr_utils.SessionOptions
+
+    def _capped_session_options():
+        so = original()
+        so.intra_op_num_threads = n
+        return so
+
+    _capped_session_options._campus_thread_capped = True  # type: ignore[attr-defined]
+    rocr_utils.SessionOptions = _capped_session_options
+    logger.info(
+        "RapidOCR onnxruntime intra-op 线程上限设为 %d（物理核 %s）；"
+        "屏幕共享等高负载场景可显著降低 CPU 争用",
+        n,
+        os.cpu_count(),
+    )
 
 
 class BaseOCR(ABC):
@@ -73,6 +126,8 @@ class RapidOCREngine(BaseOCR):
     def __init__(self) -> None:
         from rapidocr_onnxruntime import RapidOCR
 
+        # 必须在构造 RapidOCR 之前打补丁：会话在其 __init__ 内即创建。
+        limit_rapidocr_threads(effective_ocr_threads())
         self._engine = RapidOCR()
 
     def image_to_text(self, image_bytes: bytes, mime: str = "image/png") -> tuple[str, dict]:

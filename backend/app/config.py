@@ -138,6 +138,19 @@ class Settings(BaseSettings):
     ocr_lang: str = "ch"
     pdf_ocr_dpi: int = 180
     pdf_text_min_chars: int = 20              # 单页文本少于该值判定为扫描页，转图走 OCR
+    # 本地 OCR（rapidocr/onnxruntime）的 intra-op 线程上限。
+    #   · 0（默认）= 自动：max(2, cpu_count // 2)，给系统留一半核；
+    #   · >0       = 显式线程数；
+    #   · <0       = 不限制（引擎默认，可能吃满全部物理核）。
+    # 为什么要限：onnxruntime 默认按物理核数起线程，且 det/cls/rec 三个会话
+    # 各自都想吃满全核。屏幕共享/录制时采集+编码本就抢 CPU，OCR 一起来会把
+    # 所有核占满，导致代理转发、浏览器渲染被饿住（表现为解析极慢甚至加载不出来）。
+    # 实测依据（本机 12 核，同一张多行文字图跑 det+rec 全链路，中位耗时）：
+    #   默认吃满全核 ≈836ms、限 4 线程 ≈808ms（噪声内，几乎无差）、
+    #   限 2 线程 ≈873ms（仅 +4%）、限 1 线程 ≈1195ms（+43%）。
+    # 即这类小模型并行度很低，砍到「核数一半」几乎不损失 OCR 速度，却能空出
+    # 一半核给编码器与浏览器。换机器无需改代码（0=按核数自适应）。
+    ocr_cpu_threads: int = 0
 
     # ---- 向量检索 ----
     embedding_provider: str = "auto"          # auto: dashscope(有 Key) -> local_hash
