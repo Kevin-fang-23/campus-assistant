@@ -90,7 +90,21 @@ class PaddleOCREngine(BaseOCR):
     def __init__(self) -> None:
         from paddleocr import PaddleOCR
 
-        self._engine = PaddleOCR(use_angle_cls=True, lang=settings.ocr_lang, show_log=False)
+        # 与 RapidOCR 对齐：把线程上限注入 PaddleOCR 的 cpu_threads，降低高负载
+        # （如屏幕共享）下的 CPU 争用。effective_ocr_threads()==0 表示不干预，
+        # 此时不传 cpu_threads，交给 PaddleOCR 自身默认（通常按核数）。
+        #   · cpu_threads 是 PaddleOCR 2.x 的合法参数；3.x 及个别版本不接受，
+        #     会抛 TypeError，故逐级退回最小参数集，保证引擎仍能构造、不因线程
+        #     配置而整体降级掉 paddle 路。
+        n = effective_ocr_threads()
+        base = {"use_angle_cls": True, "lang": settings.ocr_lang, "show_log": False}
+        if n > 0:
+            base["cpu_threads"] = n
+        try:
+            self._engine = PaddleOCR(**base)
+        except TypeError:
+            # 版本不认 cpu_threads / show_log / use_angle_cls 等扩展参数 → 退回最小集
+            self._engine = PaddleOCR(lang=settings.ocr_lang)
 
     def image_to_text(self, image_bytes: bytes, mime: str = "image/png") -> tuple[str, dict]:
         arr = _to_ndarray(image_bytes)

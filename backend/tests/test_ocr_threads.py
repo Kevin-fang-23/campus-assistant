@@ -76,3 +76,58 @@ def test_limit_is_idempotent(rocr_utils):
     ocr.limit_rapidocr_threads(5)
     assert rocr_utils.SessionOptions is first
     assert rocr_utils.SessionOptions().intra_op_num_threads == 3
+
+
+# --------------------------------------------------------------------------
+# PaddleOCR：cpu_threads 注入（本机未装 paddleocr，用假模块验证构造参数逻辑）
+# --------------------------------------------------------------------------
+def _install_fake_paddle(monkeypatch, *, reject_threads: bool = False):
+    """把 sys.modules['paddleocr'] 换成假模块，记录 PaddleOCR 收到的 kwargs。
+
+    reject_threads=True 时模拟「不认 cpu_threads 的版本」：带该参数就抛 TypeError，
+    用于验证逐级回退到最小参数集的路径。
+    """
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    captured: dict = {}
+
+    def _PaddleOCR(**kwargs):
+        captured["kwargs"] = kwargs
+        if reject_threads and "cpu_threads" in kwargs:
+            raise TypeError("unexpected keyword argument 'cpu_threads'")
+        return SimpleNamespace(**kwargs)
+
+    mod = types.ModuleType("paddleocr")
+    mod.PaddleOCR = _PaddleOCR
+    monkeypatch.setitem(sys.modules, "paddleocr", mod)
+    return captured
+
+
+def test_paddle_passes_cpu_threads(monkeypatch):
+    """配置为显式线程数时，cpu_threads 必须透传给 PaddleOCR。"""
+    monkeypatch.setattr(settings, "ocr_cpu_threads", 4)
+    captured = _install_fake_paddle(monkeypatch)
+    eng = ocr.PaddleOCREngine()
+    assert captured["kwargs"].get("cpu_threads") == 4
+    assert eng.name == "paddleocr"
+
+
+def test_paddle_omits_cpu_threads_when_not_limiting(monkeypatch):
+    """配置 <0（不干预）时不能传 cpu_threads，交给 PaddleOCR 自身默认。"""
+    monkeypatch.setattr(settings, "ocr_cpu_threads", -1)
+    captured = _install_fake_paddle(monkeypatch)
+    ocr.PaddleOCREngine()
+    assert "cpu_threads" not in captured["kwargs"]
+
+
+def test_paddle_falls_back_on_unsupported_kwarg(monkeypatch):
+    """版本不认 cpu_threads → TypeError → 退回只带 lang 的最小参数集。"""
+    monkeypatch.setattr(settings, "ocr_cpu_threads", 4)
+    captured = _install_fake_paddle(monkeypatch, reject_threads=True)
+    eng = ocr.PaddleOCREngine()  # 不应抛出：已回退
+    assert eng.name == "paddleocr"
+    # 最后一次（回退）构造只带 lang，且不含 cpu_threads
+    assert captured["kwargs"] == {"lang": settings.ocr_lang}
+
